@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { ShieldCheck, WifiOff, HardDrive, Lock, Cpu, CheckCircle2, X, Terminal, Heart, ExternalLink } from 'lucide-react';
+import { ShieldCheck, WifiOff, HardDrive, Lock, Cpu, CheckCircle2, X, Terminal, Heart, ExternalLink, GitBranch } from 'lucide-react';
+import { RepoDriftChecker } from './RepoDriftChecker';
 
 interface OfflinePrivacyModalProps {
   isOpen: boolean;
@@ -10,7 +11,7 @@ interface OfflinePrivacyModalProps {
 const PAYPAL_DONATE_URL = 'https://www.paypal.com/donate/?hosted_button_id=JLAGXTV4FX96S';
 
 export const OfflinePrivacyModal: React.FC<OfflinePrivacyModalProps> = ({ isOpen, onClose, openSupportModal }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'technical' | 'verify'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'technical' | 'verify' | 'drift'>('overview');
 
   if (!isOpen) return null;
 
@@ -81,6 +82,17 @@ export const OfflinePrivacyModal: React.FC<OfflinePrivacyModalProps> = ({ isOpen
           >
             <Terminal className="w-3.5 h-3.5" />
             <span>How To Self-Verify</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('drift')}
+            className={`pb-3 px-3 border-b-2 transition-all flex items-center gap-1.5 ${
+              activeTab === 'drift'
+                ? 'border-cyan-400 text-cyan-400 font-bold'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <GitBranch className="w-3.5 h-3.5" />
+            <span>Repo Drift</span>
           </button>
         </div>
 
@@ -252,6 +264,8 @@ export const OfflinePrivacyModal: React.FC<OfflinePrivacyModalProps> = ({ isOpen
               </div>
             </div>
           )}
+
+          {activeTab === 'drift' && <RepoDriftChecker />}
         </div>
 
         {/* Modal Footer */}

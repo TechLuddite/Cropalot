@@ -71,7 +71,7 @@ The image processing pipeline follows these technical steps:
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/your-username/cropalot.git
+   git clone https://github.com/TechLuddite/Cropalot.git
    cd cropalot
    ```
 
