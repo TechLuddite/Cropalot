@@ -88,31 +88,36 @@ export const SupportModal: React.FC<SupportModalProps> = ({ isOpen, onClose }) =
           <div className="p-5 sm:p-6 rounded-2xl bg-slate-950/80 border border-slate-800/90 space-y-3">
             <div className="flex items-center gap-2.5 text-sm sm:text-base font-bold text-cyan-300">
               <Building2 className="w-5 h-5 text-cyan-400 shrink-0" />
-              <span>Special Thanks & Technology Shout-Out</span>
+              <span>Special Thanks & Tech Shout-Out</span>
             </div>
-            <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              Special thanks to my employer,{' '}
-              <a
-                href="https://halomsp.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-cyan-400 hover:text-cyan-300 font-bold underline inline-flex items-center gap-1"
-              >
-                Halo MSP
-                <ExternalLink className="w-3.5 h-3.5 opacity-80" />
-              </a>
-              — helping businesses with safe and sensible AI and software implementation. Need general IT support? Our parent company{' '}
-              <a
-                href="https://tech2u.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-cyan-400 hover:text-cyan-300 font-bold underline inline-flex items-center gap-1"
-              >
-                Tech 2U
-                <ExternalLink className="w-3.5 h-3.5 opacity-80" />
-              </a>
-              {' '}can assist with any IT need!
-            </p>
+            <div className="space-y-2 text-xs sm:text-sm text-slate-300 leading-relaxed">
+              <p>
+                Huge shout-out to{' '}
+                <a
+                  href="https://halomsp.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-cyan-400 hover:text-cyan-300 font-bold underline inline-flex items-center gap-1"
+                >
+                  Halo MSP
+                  <ExternalLink className="w-3.5 h-3.5 opacity-80" />
+                </a>
+                {' '}(<a href="https://halomsp.com" target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:text-cyan-300 underline">halomsp.com</a>)—helping businesses navigate safe and sensible AI and software implementations!
+              </p>
+              <p>
+                And to their parent company,{' '}
+                <a
+                  href="https://tech2u.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-cyan-400 hover:text-cyan-300 font-bold underline inline-flex items-center gap-1"
+                >
+                  Tech 2U
+                  <ExternalLink className="w-3.5 h-3.5 opacity-80" />
+                </a>
+                {' '}(<a href="https://tech2u.com" target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:text-cyan-300 underline">tech2u.com</a>), ready to assist with any business or personal IT need with expert, reliable support.
+              </p>
+            </div>
           </div>
         </div>
 
