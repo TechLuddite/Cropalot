@@ -9,13 +9,20 @@ import {
   ExternalLink, 
   FileCode, 
   Globe, 
-  ShieldCheck, 
+  Code2,
+  Search,
   Terminal,
   Copy,
-  Check,
-  Code2,
-  Search
+  Check
 } from 'lucide-react';
+
+// Import exact raw source code of key audited files using Vite's ?raw feature
+import rawPackageJson from '../../package.json?raw';
+import rawMetadataJson from '../../metadata.json?raw';
+import rawReadme from '../../README.md?raw';
+import rawAppTsx from '../App.tsx?raw';
+import rawCvEngine from '../utils/cvEngine.ts?raw';
+import rawOfflinePrivacyModal from './OfflinePrivacyModal.tsx?raw';
 
 interface FileSyncStatus {
   path: string;
@@ -34,15 +41,17 @@ interface CommitInfo {
   htmlUrl: string;
 }
 
-// Key files to audit for drift
-const FILES_TO_AUDIT = [
-  'package.json',
-  'metadata.json',
-  'src/App.tsx',
-  'src/utils/autoCropEngine.ts',
-  'src/components/OfflinePrivacyModal.tsx',
-  'README.md'
-];
+// Map of audited file relative paths to their actual embedded raw local source content
+const LOCAL_RAW_FILES: Record<string, string> = {
+  'package.json': rawPackageJson,
+  'metadata.json': rawMetadataJson,
+  'src/App.tsx': rawAppTsx,
+  'src/utils/cvEngine.ts': rawCvEngine,
+  'src/components/OfflinePrivacyModal.tsx': rawOfflinePrivacyModal,
+  'README.md': rawReadme
+};
+
+const FILES_TO_AUDIT = Object.keys(LOCAL_RAW_FILES);
 
 export const RepoDriftChecker: React.FC = () => {
   const [repoInput, setRepoInput] = useState<string>('TechLuddite/Cropalot');
@@ -55,27 +64,18 @@ export const RepoDriftChecker: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [copiedCmd, setCopiedCmd] = useState<boolean>(false);
 
+  // Normalize line endings to LF (\n) to ensure hash consistency across OS/git line-ending conversions
+  const normalizeContent = (text: string): string => {
+    return text.replace(/\r\n/g, '\n');
+  };
+
   // Helper to compute SHA-256 of text using browser Web Crypto API
   const computeSha256 = async (text: string): Promise<string> => {
     const encoder = new TextEncoder();
-    const data = encoder.encode(text);
+    const data = encoder.encode(normalizeContent(text));
     const hashBuffer = await crypto.subtle.digest('SHA-256', data);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-  };
-
-  // Helper to fetch local contents of target files if embedded or available
-  const getLocalFileContent = async (filePath: string): Promise<string> => {
-    try {
-      const res = await fetch(`/${filePath}`);
-      if (res.ok) {
-        return await res.text();
-      }
-    } catch {
-      // Fallback for vite bundle / dev mode
-    }
-    // Simple mock signature generator based on known build state
-    return `local-signature-${filePath}-v1.0.0`;
   };
 
   const handleRunVerification = async () => {
@@ -120,7 +120,7 @@ export const RepoDriftChecker: React.FC = () => {
       let totalDriftCount = 0;
 
       for (const filePath of FILES_TO_AUDIT) {
-        const localContent = await getLocalFileContent(filePath);
+        const localContent = LOCAL_RAW_FILES[filePath] || '';
         const localHash = await computeSha256(localContent);
 
         try {
