@@ -85,8 +85,28 @@ export default function App() {
   };
 
   const handleDeletePhoto = (id: string) => {
-    const newList = extractedPhotos.filter(p => p.id !== id);
-    savePhotosLocally(newList);
+    setExtractedPhotos(prev => {
+      const newList = prev.filter(p => p.id !== id);
+      try {
+        localStorage.setItem(STORAGE_KEY_PHOTOS, JSON.stringify(newList));
+      } catch (err) {
+        console.warn('LocalStorage limit reached for photo cache:', err);
+      }
+      return newList;
+    });
+  };
+
+  const handleDeleteBatchPhotos = (ids: string[]) => {
+    const idSet = new Set(ids);
+    setExtractedPhotos(prev => {
+      const newList = prev.filter(p => !idSet.has(p.id));
+      try {
+        localStorage.setItem(STORAGE_KEY_PHOTOS, JSON.stringify(newList));
+      } catch (err) {
+        console.warn('LocalStorage limit reached for photo cache:', err);
+      }
+      return newList;
+    });
   };
 
   const handleClearAll = () => {
@@ -157,6 +177,7 @@ export default function App() {
             photos={extractedPhotos}
             onUpdatePhoto={handleUpdatePhoto}
             onDeletePhoto={handleDeletePhoto}
+            onDeleteBatchPhotos={handleDeleteBatchPhotos}
             onClearAll={handleClearAll}
             onNavigateToUpload={() => setActiveTab('upload')}
           />

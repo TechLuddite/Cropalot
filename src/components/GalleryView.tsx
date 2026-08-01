@@ -8,6 +8,7 @@ interface GalleryViewProps {
   photos: ExtractedPhoto[];
   onUpdatePhoto: (photo: ExtractedPhoto) => void;
   onDeletePhoto: (id: string) => void;
+  onDeleteBatchPhotos?: (ids: string[]) => void;
   onClearAll: () => void;
   onNavigateToUpload: () => void;
 }
@@ -16,6 +17,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
   photos,
   onUpdatePhoto,
   onDeletePhoto,
+  onDeleteBatchPhotos,
   onClearAll,
   onNavigateToUpload
 }) => {
@@ -136,7 +138,11 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
             {selectedIds.length > 0 && (
               <button
                 onClick={() => {
-                  selectedIds.forEach(id => onDeletePhoto(id));
+                  if (onDeleteBatchPhotos) {
+                    onDeleteBatchPhotos(selectedIds);
+                  } else {
+                    selectedIds.forEach(id => onDeletePhoto(id));
+                  }
                   setSelectedIds([]);
                 }}
                 className="px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs font-semibold flex items-center gap-1.5 transition-colors"
@@ -214,18 +220,28 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
                       <span>Enhance</span>
                     </button>
 
-                    <button
-                      onClick={() => {
-                        const a = document.createElement('a');
-                        a.href = photo.enhancedUrl;
-                        a.download = `${photo.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.png`;
-                        a.click();
-                      }}
-                      title="Download Photo"
-                      className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
-                    >
-                      <Download className="w-4 h-4 text-slate-300 hover:text-emerald-400" />
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => {
+                          const a = document.createElement('a');
+                          a.href = photo.enhancedUrl;
+                          a.download = `${photo.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.png`;
+                          a.click();
+                        }}
+                        title="Download Photo"
+                        className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                      >
+                        <Download className="w-4 h-4 text-slate-300 hover:text-emerald-400" />
+                      </button>
+
+                      <button
+                        onClick={() => onDeletePhoto(photo.id)}
+                        title="Delete Photo"
+                        className="p-2 rounded-lg bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-colors"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
