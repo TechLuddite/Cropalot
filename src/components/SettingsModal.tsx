@@ -73,31 +73,104 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </h4>
 
             <div className="space-y-3 bg-slate-950/60 p-4 rounded-2xl border border-slate-800/80">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-4">
                 <div>
-                  <div className="font-bold text-xs text-white">Default Export Format</div>
-                  <div className="text-[10px] text-slate-400">Format for extracted individual photos</div>
+                  <div className="font-bold text-xs text-white">Export format</div>
+                  <div className="text-[10px] text-slate-400">
+                    Used for downloads, ZIP and folder export
+                  </div>
                 </div>
                 <select
                   value={localSettings.defaultOutputFormat}
-                  onChange={(e) => setLocalSettings({ ...localSettings, defaultOutputFormat: e.target.value as any })}
+                  onChange={(e) =>
+                    setLocalSettings({
+                      ...localSettings,
+                      defaultOutputFormat: e.target.value as AppSettings['defaultOutputFormat']
+                    })
+                  }
                   className="bg-slate-800 border border-slate-700 text-white font-semibold text-xs rounded-xl px-3 py-1.5 focus:outline-none focus:border-emerald-500"
                 >
-                  <option value="png">PNG (Lossless)</option>
-                  <option value="jpeg">JPEG (Compressed)</option>
-                  <option value="webp">WebP (Modern)</option>
+                  <option value="jpeg">JPEG — smallest, carries capture date</option>
+                  <option value="png">PNG — lossless, largest</option>
+                  <option value="webp">WebP — small and lossless-ish</option>
                 </select>
+              </div>
+
+              {/* Quality only means anything for the lossy encoders. */}
+              {localSettings.defaultOutputFormat !== 'png' && (
+                <div className="space-y-1.5 pt-2 border-t border-slate-800/60">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-bold text-xs text-white">Export quality</div>
+                      <div className="text-[10px] text-slate-400">
+                        Higher keeps more detail and makes bigger files
+                      </div>
+                    </div>
+                    <span className="text-xs font-bold text-emerald-400 tabular-nums">
+                      {Math.round(localSettings.exportQuality * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="50"
+                    max="100"
+                    step="1"
+                    value={Math.round(localSettings.exportQuality * 100)}
+                    aria-label="Export quality"
+                    onChange={(e) =>
+                      setLocalSettings({
+                        ...localSettings,
+                        exportQuality: parseInt(e.target.value, 10) / 100
+                      })
+                    }
+                    className="w-full accent-emerald-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+                  />
+                </div>
+              )}
+
+              <div className="space-y-1.5 pt-2 border-t border-slate-800/60">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="font-bold text-xs text-white">Detection sensitivity</div>
+                    <div className="text-[10px] text-slate-400">
+                      Starting threshold; adjustable per sheet in the editor
+                    </div>
+                  </div>
+                  <span className="text-xs font-bold text-emerald-400 tabular-nums">
+                    {localSettings.autoDeskewSensitivity}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="1"
+                  max="10"
+                  step="1"
+                  value={localSettings.autoDeskewSensitivity}
+                  aria-label="Default detection sensitivity"
+                  onChange={(e) =>
+                    setLocalSettings({
+                      ...localSettings,
+                      autoDeskewSensitivity: parseInt(e.target.value, 10)
+                    })
+                  }
+                  className="w-full accent-emerald-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+                />
               </div>
 
               <div className="flex items-center justify-between pt-2 border-t border-slate-800/60">
                 <div>
-                  <div className="font-bold text-xs text-white">Auto-Detect on Upload</div>
-                  <div className="text-[10px] text-slate-400">Automatically run computer vision engine</div>
+                  <div className="font-bold text-xs text-white">Detect automatically</div>
+                  <div className="text-[10px] text-slate-400">
+                    Run detection as soon as a sheet opens
+                  </div>
                 </div>
                 <input
                   type="checkbox"
                   checked={localSettings.autoDetectOnUpload}
-                  onChange={(e) => setLocalSettings({ ...localSettings, autoDetectOnUpload: e.target.checked })}
+                  aria-label="Detect automatically on upload"
+                  onChange={(e) =>
+                    setLocalSettings({ ...localSettings, autoDetectOnUpload: e.target.checked })
+                  }
                   className="w-4 h-4 accent-emerald-500 rounded cursor-pointer"
                 />
               </div>
@@ -138,7 +211,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
         {/* Footer */}
         <div className="flex items-center justify-between border-t border-slate-800 pt-4">
-          <span className="text-[10px] text-slate-500">Cropalot v2.5 • Offline Android Edition</span>
+          <span className="text-[10px] text-slate-500">Cropalot • Local-only</span>
           <button
             onClick={handleSave}
             className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-2 shadow-lg shadow-emerald-500/20"

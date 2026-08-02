@@ -1,8 +1,29 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { PhotoQuad, ScanSheet, Point, ExtractedPhoto } from '../types';
-import { detectPhotoQuads, extractAndDeskewPhoto, prepareSheet, quadIoU } from '../utils/cvEngine';
+import { PhotoQuad, ScanSheet, Point, AppSettings, FilterSettings } from '../types';
+import { detectPhotoQuads, extractAndDeskewPhoto, prepareSheet, quadIoU, canvasToBlob } from '../utils/cvEngine';
 import { orderQuadPoints } from '../utils/geometry';
-import { Plus, Trash2, RotateCw, Check, RefreshCw, ArrowRight, AlertTriangle, X, Target, Sliders } from 'lucide-react';
+import { PhotoRecord } from '../utils/photoStore';
+import { renderThumb } from '../utils/imageProcessing';
+import { Plus, Trash2, RotateCw, Check, RefreshCw, ArrowRight, AlertTriangle, X, Target, Sliders, CalendarDays } from 'lucide-react';
+
+/**
+ * Crops are stored exactly as rectified, with no corrections baked in.
+ *
+ * Extraction used to apply an auto-contrast stretch, a saturation bump and a
+ * sharpen pass to every photo automatically, into the only copy the gallery
+ * could export. For irreplaceable family photographs the untouched pixels have
+ * to be what is kept; corrections belong in the enhancer, where they are
+ * reversible.
+ */
+const NEUTRAL_FILTERS: FilterSettings = {
+  brightness: 0,
+  contrast: 0,
+  saturation: 0,
+  warmth: 0,
+  sharpen: 0,
+  trimMargin: 0,
+  preset: 'none'
+};
 
 /** Loads a data URL into an <img>, rejecting rather than hanging on failure. */
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -15,24 +36,16 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
-/** Reads back the true pixel dimensions of a rendered crop. */
-function measureImage(src: string): Promise<{ width: number; height: number }> {
-  return new Promise((resolve) => {
-    const probe = new Image();
-    probe.onload = () => resolve({ width: probe.naturalWidth, height: probe.naturalHeight });
-    probe.onerror = () => resolve({ width: 0, height: 0 });
-    probe.src = src;
-  });
-}
-
 interface DetectionEditorProps {
   sheet: ScanSheet;
-  onPhotosExtracted: (photos: ExtractedPhoto[]) => void;
+  settings: AppSettings;
+  onPhotosExtracted: (photos: PhotoRecord[]) => void;
   onBackToUpload: () => void;
 }
 
 export const DetectionEditor: React.FC<DetectionEditorProps> = ({
   sheet,
+  settings,
   onPhotosExtracted,
   onBackToUpload
 }) => {
@@ -45,15 +58,17 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
   const [draggingPoint, setDraggingPoint] = useState<{ quadId: string; pointIdx: number } | null>(null);
   const [loupePos, setLoupePos] = useState<{ x: number; y: number; normX: number; normY: number } | null>(null);
 
-  const [sensitivity, setSensitivity] = useState<number>(5);
+  const [sensitivity, setSensitivity] = useState<number>(settings.autoDeskewSensitivity);
   const [isDetecting, setIsDetecting] = useState<boolean>(false);
   const [isExtracting, setIsExtracting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [accuracy, setAccuracy] = useState<{ meanIoU: number; matched: number; expected: number } | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [captureDate, setCaptureDate] = useState<string>(sheet.captureDate ?? '');
 
   // Auto-detect on mount if no quads exist
   useEffect(() => {
-    if ((!sheet.quads || sheet.quads.length === 0) && sheet.dataUrl) {
+    if ((!sheet.quads || sheet.quads.length === 0) && sheet.dataUrl && settings.autoDetectOnUpload) {
       runAutoDetection(sensitivity);
     } else if (sheet.quads && sheet.quads.length > 0) {
       setQuads(sheet.quads);
@@ -323,6 +338,7 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
     if (quads.length === 0 || !sheet.dataUrl) return;
     setIsExtracting(true);
     setError(null);
+    setProgress({ done: 0, total: quads.length });
 
     try {
       const img = await loadImage(sheet.dataUrl);
@@ -331,59 +347,51 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
       const pixels = prepareSheet(img);
       if (!pixels) throw new Error('could not read sheet pixels');
 
-      const extractedList: ExtractedPhoto[] = [];
+      const extracted: PhotoRecord[] = [];
+      const stamp = Date.now();
 
       for (let i = 0; i < quads.length; i++) {
-        const q = quads[i];
-        const croppedUrl = extractAndDeskewPhoto(pixels, q);
-        if (!croppedUrl) continue;
+        const quad = quads[i];
+        const canvas = extractAndDeskewPhoto(pixels, quad);
+        if (!canvas) continue;
 
-        // These crops are family archives. Ship the pixels as cropped and let
-        // the user opt into corrections in the enhancer, rather than baking an
-        // auto-contrast stretch and a sharpen pass into the only copy they
-        // ever get to export.
-        const defaultFilters = {
-          brightness: 0,
-          contrast: 0,
-          saturation: 0,
-          warmth: 0,
-          sharpen: 0,
-          trimMargin: 0,
-          preset: 'none' as const
-        };
+        // PNG for the stored master: the crop is the archival copy, and every
+        // export re-renders from it, so it must not accumulate lossy generations.
+        const original = await canvasToBlob(canvas, 'image/png');
+        const thumb = await renderThumb(original, NEUTRAL_FILTERS, 0);
 
-        // Measure what was actually produced instead of asserting 800x600.
-        const dims = await measureImage(croppedUrl);
-
-        extractedList.push({
-          id: `photo_${Date.now()}_${i}`,
+        extracted.push({
+          id: `photo_${stamp}_${i}`,
           sheetId: sheet.id,
-          title: q.label || `${sheet.name}_Photo_${i + 1}`,
-          tags: ['Family', 'Scan'],
-          quad: q,
-          originalCropUrl: croppedUrl,
-          enhancedUrl: croppedUrl,
-          width: dims.width,
-          height: dims.height,
+          title: quad.label || `${sheet.name}_Photo_${i + 1}`,
+          captureDate: captureDate.trim() || undefined,
+          tags: ['Scan'],
+          quad,
+          width: canvas.width,
+          height: canvas.height,
           rotation: 0,
-          filters: defaultFilters,
-          createdAt: Date.now()
+          filters: { ...NEUTRAL_FILTERS },
+          createdAt: stamp + i,
+          original,
+          thumb
         });
 
-        // Yield between photos so the progress label can repaint.
+        setProgress({ done: i + 1, total: quads.length });
+        // Yield so the progress counter repaints between photos.
         await new Promise(r => setTimeout(r, 0));
       }
 
-      if (extractedList.length === 0) {
+      if (extracted.length === 0) {
         setError('Nothing could be extracted from these regions.');
         return;
       }
-      onPhotosExtracted(extractedList);
+      onPhotosExtracted(extracted);
     } catch (err) {
       console.error('Extraction failed', err);
       setError('Extraction failed. The sheet may be too large for this device to process at once.');
     } finally {
       setIsExtracting(false);
+      setProgress(null);
     }
   };
 
@@ -447,7 +455,9 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
             {isExtracting ? (
               <>
                 <RefreshCw className="w-4 h-4 animate-spin" />
-                <span>Deskewing...</span>
+                <span>
+                  {progress ? `Deskewing ${progress.done}/${progress.total}...` : 'Deskewing...'}
+                </span>
               </>
             ) : (
               <>
@@ -487,6 +497,29 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
         </div>
         <p className="text-[10px] text-slate-500 sm:max-w-[16rem] leading-relaxed">
           Raise this if photos are missed on a low-contrast page; lower it if the page texture is being picked up as photos.
+        </p>
+      </div>
+
+      {/* One date for the whole page, inherited by every photo cropped from it.
+          Album pages are usually from one occasion, so setting it here beats
+          typing it into each photo afterwards. */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5">
+        <div className="flex items-center gap-2 shrink-0">
+          <CalendarDays className="w-4 h-4 text-emerald-400" />
+          <label htmlFor="sheet-capture-date" className="text-xs font-bold text-slate-200">
+            When was this page taken?
+          </label>
+        </div>
+        <input
+          id="sheet-capture-date"
+          type="text"
+          value={captureDate}
+          onChange={(e) => setCaptureDate(e.target.value)}
+          placeholder="1974, 1974-08 or 1974-08-23  (optional)"
+          className="flex-1 px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 font-mono"
+        />
+        <p className="text-[10px] text-slate-500 sm:max-w-[16rem] leading-relaxed">
+          Saved as the EXIF capture date on JPEG export, so these land under the right year in your photo library rather than today.
         </p>
       </div>
 
