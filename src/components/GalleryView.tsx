@@ -9,10 +9,11 @@ import {
   extensionFor,
   safeFilename
 } from '../utils/imageProcessing';
+import { findDuplicateGroups } from '../utils/perceptualHash';
 import { PhotoEnhancerModal } from './PhotoEnhancerModal';
 import {
   Download, SlidersHorizontal, Trash2, CheckSquare, Square, Search,
-  FolderArchive, FolderOpen, Plus, Image as ImageIcon, Loader2, AlertTriangle, X
+  FolderArchive, FolderOpen, Plus, Image as ImageIcon, Loader2, AlertTriangle, X, Copy
 } from 'lucide-react';
 
 interface GalleryViewProps {
@@ -90,16 +91,36 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [exportState, setExportState] = useState<{ done: number; total: number } | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
 
   const thumbUrls = useThumbUrls(photos);
 
+  /**
+   * Photos that look like the same picture as another photo.
+   *
+   * Rescanning is routine when digitising a shoebox: a page gets photographed
+   * twice, a folder gets dropped in again, the same print turns up in two
+   * albums. Byte comparison cannot see it because a rescan never produces
+   * identical bytes, so this uses a perceptual hash.
+   */
+  const duplicateIds = useMemo(() => {
+    const groups = findDuplicateGroups(photos);
+    const ids = new Set<string>();
+    for (const group of groups) for (const id of group.ids) ids.add(id);
+    return ids;
+  }, [photos]);
+
   const filteredPhotos = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return photos;
-    return photos.filter(
-      p => p.title.toLowerCase().includes(q) || p.tags.some(t => t.toLowerCase().includes(q))
-    );
-  }, [photos, searchQuery]);
+    let list = photos;
+    if (q) {
+      list = list.filter(
+        p => p.title.toLowerCase().includes(q) || p.tags.some(t => t.toLowerCase().includes(q))
+      );
+    }
+    if (showDuplicatesOnly) list = list.filter(p => duplicateIds.has(p.id));
+    return list;
+  }, [photos, searchQuery, showDuplicatesOnly, duplicateIds]);
 
   /**
    * What an export actually covers: the current selection if there is one,
@@ -279,6 +300,21 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
           </div>
 
           <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
+            {duplicateIds.size > 0 && (
+              <button
+                onClick={() => setShowDuplicatesOnly(v => !v)}
+                title="Photos that look like the same picture as another in your library"
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border transition-colors ${
+                  showDuplicatesOnly
+                    ? 'bg-amber-500/20 text-amber-200 border-amber-500/40'
+                    : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                }`}
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>{showDuplicatesOnly ? 'Showing' : 'Possible'} duplicates ({duplicateIds.size})</span>
+              </button>
+            )}
+
             <button
               onClick={selectAll}
               className="text-xs font-semibold text-slate-300 hover:text-white flex items-center gap-1.5"
@@ -364,6 +400,16 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
                   <span className="absolute bottom-3 right-3 px-2 py-0.5 rounded-md bg-slate-950/80 border border-slate-800 text-slate-300 text-[10px] font-bold tabular-nums backdrop-blur-sm">
                     {photo.width}&times;{photo.height}
                   </span>
+
+                  {duplicateIds.has(photo.id) && (
+                    <span
+                      title="Looks like the same picture as another photo in your library"
+                      className="absolute top-3 right-3 px-2 py-0.5 rounded-md bg-amber-500/20 border border-amber-500/40 text-amber-200 text-[10px] font-bold flex items-center gap-1 backdrop-blur-sm"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>Duplicate?</span>
+                    </span>
+                  )}
 
                   {photo.filters.preset !== 'none' && (
                     <span className="absolute bottom-3 left-3 px-2 py-0.5 rounded-md bg-slate-950/80 border border-slate-800 text-emerald-400 text-[10px] font-bold uppercase tracking-wider backdrop-blur-sm">

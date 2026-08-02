@@ -65,6 +65,8 @@ Better still: load the page once, turn on airplane mode, and **reload**. It stil
 Being straight with you about where this currently falls short:
 
 - **JPEG, PNG and WebP only.** Browsers can't decode TIFF or HEIC in an `<img>`; convert those first. Cropalot now tells you instead of doing nothing.
+- **Low-contrast pages need the sensitivity slider.** Detection compares each pixel to the estimated page colour, so white-bordered prints on cream album paper sit close to the threshold. The default (7) handles the cases we test; if a light photo comes back split into pieces, raise it. A local-contrast signal would remove the need for the slider, and isn't built yet.
+- **Duplicate detection is a hint, not a verdict.** It's tuned to catch rescans without flagging two photos from the same roll. Photos of the same scene in similar light can still trip it — it marks them for your attention, and never deletes anything.
 
 ---
 
@@ -117,6 +119,8 @@ Cropalot/
     ├── types.ts                    # Shared TypeScript types
     ├── workers/cv.worker.ts        # Detection + rectification, off the main thread
     ├── utils/
+    │   ├── batch.ts                # Shared per-sheet pipeline + unattended album run
+    │   ├── perceptualHash.ts       # dHash + colour signature for duplicate detection
     │   ├── geometry.ts             # Hull, min-area rect, polygon clipping, homography solver
     │   ├── cvEngine.ts             # Detection pipeline + homography warp
     │   ├── cvClient.ts             # Worker dispatch with inline fallback
@@ -128,6 +132,7 @@ Cropalot/
     │   └── sampleSheets.ts         # Generated demo album pages
     └── components/
         ├── Navbar.tsx              # Top & bottom navigation
+        ├── BatchRunner.tsx         # Unattended album run with per-page results
         ├── SheetUploader.tsx       # Drop zone, sample picker, upload errors
         ├── DetectionEditor.tsx     # Interactive corner editor + magnifier
         ├── GalleryView.tsx         # Extracted photo library & batch export

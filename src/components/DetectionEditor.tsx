@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { PhotoQuad, ScanSheet, Point, AppSettings, FilterSettings } from '../types';
 import { quadIoU } from '../utils/cvEngine';
-import { detectPhotos, extractPhotos } from '../utils/cvClient';
+import { detectPhotos } from '../utils/cvClient';
+import { processSheet } from '../utils/batch';
 import { orderQuadPoints } from '../utils/geometry';
 import { PhotoRecord } from '../utils/photoStore';
 import { renderThumb } from '../utils/imageProcessing';
-import { Plus, Trash2, RotateCw, Check, RefreshCw, ArrowRight, AlertTriangle, X, Target, Sliders, CalendarDays } from 'lucide-react';
+import { Plus, Trash2, RotateCw, Check, RefreshCw, ArrowRight, AlertTriangle, X, Target, Sliders, CalendarDays, Layers, ChevronLeft, ChevronRight } from 'lucide-react';
 
 /**
  * Crops are stored exactly as rectified, with no corrections baked in.
@@ -29,14 +30,24 @@ const NEUTRAL_FILTERS: FilterSettings = {
 interface DetectionEditorProps {
   sheet: ScanSheet;
   settings: AppSettings;
+  pageNumber: number;
+  totalPages: number;
   onPhotosExtracted: (photos: PhotoRecord[]) => void;
+  onSkipPage: () => void;
+  onPreviousPage: () => void;
+  onRunBatch: (captureDate?: string) => void;
   onBackToUpload: () => void;
 }
 
 export const DetectionEditor: React.FC<DetectionEditorProps> = ({
   sheet,
   settings,
+  pageNumber,
+  totalPages,
   onPhotosExtracted,
+  onSkipPage,
+  onPreviousPage,
+  onRunBatch,
   onBackToUpload
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -337,37 +348,20 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
     setProgress({ done: 0, total: quads.length });
 
     try {
-      const crops = await extractPhotos(sheet.blob, quads, (done, total) =>
-        setProgress({ done, total })
-      );
+      const extracted = await processSheet(sheet, {
+        sensitivity,
+        pageNumber,
+        totalPages,
+        captureDate: captureDate.trim() || undefined,
+        quadsOverride: quads,
+        onStage: stage =>
+          setProgress(stage === 'extracting' ? { done: 0, total: quads.length } : null)
+      });
 
-      if (crops.length === 0) {
+      if (extracted.length === 0) {
         setError('Nothing could be extracted from these regions.');
         return;
       }
-
-      const stamp = Date.now();
-      const extracted: PhotoRecord[] = [];
-
-      for (let i = 0; i < crops.length; i++) {
-        const crop = crops[i];
-        extracted.push({
-          id: `photo_${stamp}_${i}`,
-          sheetId: sheet.id,
-          title: quads[i]?.label || `${sheet.name}_Photo_${i + 1}`,
-          captureDate: captureDate.trim() || undefined,
-          tags: ['Scan'],
-          quad: quads[i],
-          width: crop.width,
-          height: crop.height,
-          rotation: 0,
-          filters: { ...NEUTRAL_FILTERS },
-          createdAt: stamp + i,
-          original: crop.blob,
-          thumb: await renderThumb(crop.blob, NEUTRAL_FILTERS, 0)
-        });
-      }
-
       onPhotosExtracted(extracted);
     } catch (err) {
       console.error('Extraction failed', err);
@@ -385,6 +379,11 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
         <div>
           <h2 className="font-bold text-lg text-white flex items-center gap-2 flex-wrap">
             <span>Deskew & Crop Editor</span>
+            {totalPages > 1 && (
+              <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-cyan-500/10 text-cyan-300 border border-cyan-500/20">
+                Page {pageNumber} of {totalPages}
+              </span>
+            )}
             <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
               {quads.length} {quads.length === 1 ? 'Photo' : 'Photos'} Detected
             </span>
@@ -413,6 +412,19 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
+          {/* An album is a queue. Offer to run the rest unattended rather than
+              making the user repeat this screen forty times. */}
+          {totalPages > 1 && (
+            <button
+              onClick={() => onRunBatch(captureDate.trim() || undefined)}
+              title={`Detect and crop all ${totalPages} pages without stopping`}
+              className="px-3 py-2 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-200 text-xs font-bold flex items-center gap-1.5 border border-cyan-500/40 transition-colors"
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>Process all {totalPages}</span>
+            </button>
+          )}
+
           <button
             onClick={handleAddQuad}
             className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition-colors"
@@ -445,13 +457,46 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
             ) : (
               <>
                 <Check className="w-4 h-4" />
-                <span>Extract All ({quads.length})</span>
+                <span>
+                  {pageNumber < totalPages
+                    ? `Extract ${quads.length} & next page`
+                    : `Extract All (${quads.length})`}
+                </span>
                 <ArrowRight className="w-4 h-4 ml-1" />
               </>
             )}
           </button>
         </div>
       </div>
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between gap-3 bg-slate-900/60 border border-slate-800 rounded-2xl px-4 py-2.5">
+          <button
+            onClick={onPreviousPage}
+            disabled={pageNumber <= 1}
+            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-slate-800 text-slate-200 text-xs font-semibold flex items-center gap-1.5 border border-slate-700"
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+            <span>Previous page</span>
+          </button>
+
+          <div className="flex-1 h-1.5 rounded-full bg-slate-800 overflow-hidden mx-2">
+            <div
+              className="h-full bg-emerald-500/70 transition-all"
+              style={{ width: `${(pageNumber / totalPages) * 100}%` }}
+            />
+          </div>
+
+          <button
+            onClick={onSkipPage}
+            disabled={pageNumber >= totalPages}
+            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-slate-800 text-slate-200 text-xs font-semibold flex items-center gap-1.5 border border-slate-700"
+          >
+            <span>Skip page</span>
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Detection sensitivity - the state existed but had no control bound to it,
           so the threshold was permanently pinned at its default. */}

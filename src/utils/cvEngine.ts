@@ -231,7 +231,7 @@ function findBlobs(grid: Uint8Array, cols: number, rows: number): Region[] {
  */
 export async function detectPhotoQuads(
   imageElement: DrawableSource,
-  sensitivity: number = 5
+  sensitivity: number = 7
 ): Promise<PhotoQuad[]> {
   const srcW = imageElement.width;
   const srcH = imageElement.height;
