@@ -147,6 +147,16 @@ Cropalot/
 
 ---
 
+## 📖 For contributors
+
+- **[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)** — how the pipeline fits together, and the invariants that must not be broken (with what goes wrong if they are).
+- **[docs/LESSONS.md](./docs/LESSONS.md)** — Cropalot began as a Google AI Studio one-shot. This is the postmortem on what that draft got right, what it claimed but didn't implement, and the recurring failure shapes worth checking for in any generated codebase.
+- **[CLAUDE.md](./CLAUDE.md)** — the short version, for AI coding sessions.
+
+The one-line summary: `npm run lint` and `npm run build` pass on almost every bug this project has ever had. Verify changes by driving the built app in a browser, with a real large scan — not with the small flat-coloured samples.
+
+---
+
 ## 💖 Support & acknowledgments
 
 Cropalot is free software — no ads, no subscriptions, no paywalls.
