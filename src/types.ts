@@ -6,7 +6,10 @@ export interface Point {
 export interface PhotoQuad {
   id: string;
   points: [Point, Point, Point, Point]; // Top-Left, Top-Right, Bottom-Right, Bottom-Left
+  /** How completely the photo fills its own enclosing rectangle, 0-1. Measured, not assumed. */
   confidence: number;
+  /** Detected rotation in degrees, in (-45, 45]. 0 means the photo sits square on the page. */
+  angleDeg?: number;
   label?: string;
 }
 
@@ -44,6 +47,16 @@ export interface ScanSheet {
   height: number;
   createdAt: number;
   quads: PhotoQuad[];
+  /**
+   * Known-correct corners, available only for the generated sample sheets
+   * because their layout is chosen by us rather than measured.
+   *
+   * This is a scoring reference, never a shortcut. Detection previously
+   * returned these verbatim whenever they existed, so the samples showcased
+   * perfect crops that the real detector had no part in producing - which hid
+   * the fact that automatic detection could not deskew anything at all.
+   */
+  groundTruthQuads?: PhotoQuad[];
 }
 
 export interface AppSettings {

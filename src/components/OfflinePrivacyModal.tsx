@@ -194,7 +194,7 @@ export const OfflinePrivacyModal: React.FC<OfflinePrivacyModalProps> = ({ isOpen
                   <div className="space-y-1">
                     <h4 className="font-bold text-white text-xs">In-Browser Computer Vision (Canvas 2D)</h4>
                     <p className="text-xs text-slate-400 leading-relaxed">
-                      Auto-cropping uses a small plain-JavaScript engine (<code className="text-emerald-300">cvEngine.ts</code>) that reads canvas pixel arrays locally to estimate the page background, group foreground regions, and place a bounding box around each photo it finds.
+                      Auto-cropping uses a small plain-JavaScript engine (<code className="text-emerald-300">cvEngine.ts</code>) that reads canvas pixel arrays locally to estimate the page background, group foreground regions, and fit each region's minimum-area enclosing rectangle &mdash; which is how a crooked photo is detected at its actual angle.
                     </p>
                   </div>
                 </div>
@@ -204,9 +204,9 @@ export const OfflinePrivacyModal: React.FC<OfflinePrivacyModalProps> = ({ isOpen
                     <HardDrive className="w-4 h-4" />
                   </div>
                   <div className="space-y-1">
-                    <h4 className="font-bold text-white text-xs">Local Quadrilateral Rectification</h4>
+                    <h4 className="font-bold text-white text-xs">Local Homography Perspective Correction</h4>
                     <p className="text-xs text-slate-400 leading-relaxed">
-                      Cropping maps your 4-corner selection back to a rectangle on a standard HTML5 canvas, straightening photos that sit crooked on the page. Correction is currently bilinear, which is exact for rotated flatbed scans; full perspective correction for steeply angled phone shots is in progress.
+                      Cropping solves the 8-parameter projective transform that maps your 4-corner selection onto a rectangle, then inverse-maps every output pixel through it with bilinear sampling. Straight lines stay straight, whether the photo was rotated flat on a scanner or the page was shot at an angle.
                     </p>
                   </div>
                 </div>

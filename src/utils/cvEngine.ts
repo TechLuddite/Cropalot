@@ -1,462 +1,522 @@
 import { Point, PhotoQuad } from '../types';
+import {
+  convexHull,
+  distance,
+  minAreaRect,
+  orderQuadPoints,
+  polygonArea,
+  quadContainment,
+  solveHomography,
+  applyHomography
+} from './geometry';
+
+export { distance, orderQuadPoints, quadIoU } from './geometry';
+
+/** Working resolution for detection. Big enough for accurate corners, small enough to stay fast. */
+const DETECT_MAX_DIM = 900;
+
+/** Coarse grid used to find connected photo regions before refining their corners. */
+const GRID = 96;
+
+/** Refuse to allocate an output larger than this on either axis. */
+const MAX_OUTPUT_DIM = 8000;
 
 /**
- * Calculates Euclidean distance between two points
+ * Estimates the sheet background colour from its border.
+ *
+ * Samples a ring of points around the edge of the sheet and takes the
+ * per-channel *median*. A mean over four corner patches - the previous
+ * approach - is destroyed by a single photo overlapping one corner, which is
+ * extremely common on a full album page. The median tolerates up to half the
+ * border being covered.
  */
-export function distance(p1: Point, p2: Point): number {
-  const dx = p1.x - p2.x;
-  const dy = p1.y - p2.y;
-  return Math.sqrt(dx * dx + dy * dy);
-}
+function estimateBackground(pixels: Uint8ClampedArray, w: number, h: number): [number, number, number] {
+  const rs: number[] = [];
+  const gs: number[] = [];
+  const bs: number[] = [];
 
-/**
- * Orders 4 points into Top-Left, Top-Right, Bottom-Right, Bottom-Left
- */
-export function orderQuadPoints(points: Point[]): [Point, Point, Point, Point] {
-  if (points.length !== 4) {
-    throw new Error('Quad must have exactly 4 points');
+  const inset = Math.max(2, Math.floor(Math.min(w, h) * 0.01));
+  const step = Math.max(1, Math.floor(Math.max(w, h) / 200));
+
+  const sample = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= w || y >= h) return;
+    const idx = (y * w + x) * 4;
+    rs.push(pixels[idx]);
+    gs.push(pixels[idx + 1]);
+    bs.push(pixels[idx + 2]);
+  };
+
+  for (let x = 0; x < w; x += step) {
+    sample(x, inset);
+    sample(x, h - 1 - inset);
+  }
+  for (let y = 0; y < h; y += step) {
+    sample(inset, y);
+    sample(w - 1 - inset, y);
   }
 
-  // Sort by sum x + y
-  const sorted = [...points];
+  if (rs.length === 0) return [240, 240, 240];
 
-  // Top-left has smallest x + y
-  // Bottom-right has largest x + y
-  // Top-right has largest x - y
-  // Bottom-left has smallest x - y
-  let topLeft = sorted[0];
-  let topRight = sorted[0];
-  let bottomRight = sorted[0];
-  let bottomLeft = sorted[0];
+  const median = (arr: number[]) => {
+    arr.sort((a, b) => a - b);
+    return arr[Math.floor(arr.length / 2)];
+  };
 
-  let minSum = Infinity;
-  let maxSum = -Infinity;
-  let maxDiff = -Infinity;
-  let minDiff = Infinity;
-
-  sorted.forEach(p => {
-    const sum = p.x + p.y;
-    const diff = p.x - p.y;
-
-    if (sum < minSum) {
-      minSum = sum;
-      topLeft = p;
-    }
-    if (sum > maxSum) {
-      maxSum = sum;
-      bottomRight = p;
-    }
-    if (diff > maxDiff) {
-      maxDiff = diff;
-      topRight = p;
-    }
-    if (diff < minDiff) {
-      minDiff = diff;
-      bottomLeft = p;
-    }
-  });
-
-  return [topLeft, topRight, bottomRight, bottomLeft];
+  return [median(rs), median(gs), median(bs)];
 }
 
 /**
- * Automatic multi-photo contour & bounding quad detector for scan sheets
+ * Morphological closing (dilate then erode) on the coarse occupancy grid.
+ *
+ * Photos have interior detail that reads as background in places - a bright sky
+ * on a white scanner bed, for instance - so the raw mask is full of holes.
+ * Closing fills them. The earlier code dilated without eroding, which fixed the
+ * holes but also grew every region outward by one cell in each direction, so
+ * two photos sitting closer than ~2.5% of the sheet width fused into a single
+ * box. Eroding afterwards restores the original extent.
+ */
+function closeGrid(grid: Uint8Array, cols: number, rows: number): Uint8Array {
+  const dilated = new Uint8Array(cols * rows);
+  const closed = new Uint8Array(cols * rows);
+
+  const neighbourhood = (src: Uint8Array, gx: number, gy: number, want: number): boolean => {
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const nx = gx + dx;
+        const ny = gy + dy;
+        if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) {
+          // Treat outside the sheet as background.
+          if (want === 0) return true;
+          continue;
+        }
+        if (src[ny * cols + nx] === want) return true;
+      }
+    }
+    return false;
+  };
+
+  for (let gy = 0; gy < rows; gy++) {
+    for (let gx = 0; gx < cols; gx++) {
+      dilated[gy * cols + gx] = neighbourhood(grid, gx, gy, 1) ? 1 : 0;
+    }
+  }
+  for (let gy = 0; gy < rows; gy++) {
+    for (let gx = 0; gx < cols; gx++) {
+      closed[gy * cols + gx] = dilated[gy * cols + gx] === 1 && !neighbourhood(dilated, gx, gy, 0) ? 1 : 0;
+    }
+  }
+
+  return closed;
+}
+
+/**
+ * Fills enclosed background regions in the occupancy grid.
+ *
+ * Photos routinely contain areas that match the page they sit on - a dark sea
+ * band on a black album leaf, a bright sky on a white scanner bed - and those
+ * areas punch straight through the mask. When the hole is wide enough it splits
+ * one photo into several regions, and the leftover border strip surfaces as a
+ * spurious extra "photo".
+ *
+ * Anything genuinely outside a photo connects to the edge of the sheet.
+ * Flood-filling background inward from the border and marking whatever it
+ * cannot reach as foreground therefore closes interior holes of any size, while
+ * leaving the real page background untouched.
+ */
+function fillHoles(grid: Uint8Array, cols: number, rows: number): Uint8Array {
+  const reachable = new Uint8Array(cols * rows);
+  const stack: number[] = [];
+
+  const push = (idx: number) => {
+    if (grid[idx] === 0 && !reachable[idx]) {
+      reachable[idx] = 1;
+      stack.push(idx);
+    }
+  };
+
+  for (let gx = 0; gx < cols; gx++) {
+    push(gx);
+    push((rows - 1) * cols + gx);
+  }
+  for (let gy = 0; gy < rows; gy++) {
+    push(gy * cols);
+    push(gy * cols + cols - 1);
+  }
+
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    const cx = cur % cols;
+    const cy = (cur / cols) | 0;
+    if (cy > 0) push(cur - cols);
+    if (cy < rows - 1) push(cur + cols);
+    if (cx > 0) push(cur - 1);
+    if (cx < cols - 1) push(cur + 1);
+  }
+
+  const filled = new Uint8Array(cols * rows);
+  for (let i = 0; i < filled.length; i++) {
+    filled[i] = grid[i] === 1 || !reachable[i] ? 1 : 0;
+  }
+  return filled;
+}
+
+interface Blob {
+  cells: number[];
+  minGX: number; maxGX: number; minGY: number; maxGY: number;
+}
+
+/** Groups active grid cells into 4-connected regions. */
+function findBlobs(grid: Uint8Array, cols: number, rows: number): Blob[] {
+  const visited = new Uint8Array(cols * rows);
+  const blobs: Blob[] = [];
+
+  for (let gy = 0; gy < rows; gy++) {
+    for (let gx = 0; gx < cols; gx++) {
+      const start = gy * cols + gx;
+      if (grid[start] !== 1 || visited[start]) continue;
+
+      const cells: number[] = [];
+      let minGX = gx, maxGX = gx, minGY = gy, maxGY = gy;
+      const stack = [start];
+      visited[start] = 1;
+
+      while (stack.length > 0) {
+        const cur = stack.pop()!;
+        const cx = cur % cols;
+        const cy = (cur / cols) | 0;
+        cells.push(cur);
+
+        if (cx < minGX) minGX = cx;
+        if (cx > maxGX) maxGX = cx;
+        if (cy < minGY) minGY = cy;
+        if (cy > maxGY) maxGY = cy;
+
+        const neighbours = [
+          cy > 0 ? cur - cols : -1,
+          cy < rows - 1 ? cur + cols : -1,
+          cx > 0 ? cur - 1 : -1,
+          cx < cols - 1 ? cur + 1 : -1
+        ];
+        for (const n of neighbours) {
+          if (n >= 0 && !visited[n] && grid[n] === 1) {
+            visited[n] = 1;
+            stack.push(n);
+          }
+        }
+      }
+
+      blobs.push({ cells, minGX, maxGX, minGY, maxGY });
+    }
+  }
+
+  return blobs;
+}
+
+/**
+ * Automatic multi-photo detector for album pages and flatbed scans.
+ *
+ * Two stages. A coarse occupancy grid finds *where* the photos are, which is
+ * robust to noise and texture. Then, for each region found, the foreground
+ * pixels are collected at working resolution and reduced to their minimum-area
+ * enclosing rectangle - which is where the rotation actually comes from.
+ *
+ * Detection previously emitted axis-aligned boxes only and never recovered a
+ * photo's angle at all, so nothing in the app could deskew anything a user had
+ * not hand-corrected.
  */
 export async function detectPhotoQuads(
   imageElement: HTMLImageElement | HTMLCanvasElement,
-  sensitivity: number = 5,
-  presetQuads?: PhotoQuad[]
+  sensitivity: number = 5
 ): Promise<PhotoQuad[]> {
-  // If presetQuads exist (e.g. ground truth sample sheet quads) and sensitivity is at baseline (5),
-  // return presetQuads directly for perfect crops!
-  if (presetQuads && presetQuads.length > 0 && sensitivity === 5) {
-    return presetQuads;
-  }
-
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) return presetQuads || createDefaultQuads();
+  if (!ctx) return [];
 
-  // Downscale for fast & reliable multi-pass detection
-  const maxDim = 800;
-  let scale = 1;
-  if (imageElement.width > maxDim || imageElement.height > maxDim) {
-    scale = maxDim / Math.max(imageElement.width, imageElement.height);
-  }
+  const srcW = imageElement.width;
+  const srcH = imageElement.height;
+  const scale = Math.min(1, DETECT_MAX_DIM / Math.max(srcW, srcH));
+  const w = Math.max(1, Math.floor(srcW * scale));
+  const h = Math.max(1, Math.floor(srcH * scale));
 
-  const w = Math.floor(imageElement.width * scale);
-  const h = Math.floor(imageElement.height * scale);
   canvas.width = w;
   canvas.height = h;
-
   ctx.drawImage(imageElement, 0, 0, w, h);
-  const imgData = ctx.getImageData(0, 0, w, h);
-  const pixels = imgData.data;
+  const pixels = ctx.getImageData(0, 0, w, h).data;
 
-  // 1. Sample outer corners to estimate sheet background color
-  const bgSamples: number[][] = [];
-  const sampleCorner = (startX: number, startY: number, size: number) => {
-    for (let y = startY; y < startY + size && y < h; y++) {
-      for (let x = startX; x < startX + size && x < w; x++) {
-        const idx = (y * w + x) * 4;
-        bgSamples.push([pixels[idx], pixels[idx + 1], pixels[idx + 2]]);
-      }
-    }
+  const [bgR, bgG, bgB] = estimateBackground(pixels, w, h);
+
+  // Higher sensitivity => lower threshold => more pixels count as photo.
+  const threshold = Math.max(14, 70 - sensitivity * 5);
+  const thresholdSq = threshold * threshold;
+
+  const isForeground = (x: number, y: number): boolean => {
+    const idx = (y * w + x) * 4;
+    const dr = pixels[idx] - bgR;
+    const dg = pixels[idx + 1] - bgG;
+    const db = pixels[idx + 2] - bgB;
+    return dr * dr + dg * dg + db * db > thresholdSq;
   };
-  sampleCorner(0, 0, 15);
-  sampleCorner(w - 15, 0, 15);
-  sampleCorner(0, h - 15, 15);
-  sampleCorner(w - 15, h - 15, 15);
 
-  let bgR = 0, bgG = 0, bgB = 0;
-  if (bgSamples.length > 0) {
-    for (const s of bgSamples) {
-      bgR += s[0]; bgG += s[1]; bgB += s[2];
-    }
-    bgR /= bgSamples.length;
-    bgG /= bgSamples.length;
-    bgB /= bgSamples.length;
-  } else {
-    bgR = 240; bgG = 240; bgB = 240;
-  }
+  // --- Stage 1: coarse occupancy grid -------------------------------------
+  const cellW = w / GRID;
+  const cellH = h / GRID;
+  const occupancy = new Uint8Array(GRID * GRID);
 
-  // 2. Build coarse density grid (80x80)
-  const gridCols = 80;
-  const gridRows = 80;
-  const cellW = w / gridCols;
-  const cellH = h / gridRows;
+  for (let gy = 0; gy < GRID; gy++) {
+    for (let gx = 0; gx < GRID; gx++) {
+      const x0 = Math.floor(gx * cellW);
+      const x1 = Math.max(x0 + 1, Math.floor((gx + 1) * cellW));
+      const y0 = Math.floor(gy * cellH);
+      const y1 = Math.max(y0 + 1, Math.floor((gy + 1) * cellH));
 
-  // Sensitivity controls threshold
-  const bgThreshold = Math.max(16, 70 - sensitivity * 5);
-  const densityGrid = new Float32Array(gridCols * gridRows);
-
-  for (let gy = 0; gy < gridRows; gy++) {
-    for (let gx = 0; gx < gridCols; gx++) {
-      const startX = Math.floor(gx * cellW);
-      const endX = Math.floor((gx + 1) * cellW);
-      const startY = Math.floor(gy * cellH);
-      const endY = Math.floor((gy + 1) * cellH);
-
-      let fgCount = 0;
+      let fg = 0;
       let total = 0;
-
-      for (let y = startY; y < endY; y += 2) {
-        for (let x = startX; x < endX; x += 2) {
-          const idx = (y * w + x) * 4;
-          const r = pixels[idx];
-          const g = pixels[idx + 1];
-          const b = pixels[idx + 2];
-
-          const colorDiff = Math.sqrt(
-            (r - bgR) * (r - bgR) +
-            (g - bgG) * (g - bgG) +
-            (b - bgB) * (b - bgB)
-          );
-
-          if (colorDiff > bgThreshold) {
-            fgCount++;
-          }
+      for (let y = y0; y < y1 && y < h; y++) {
+        for (let x = x0; x < x1 && x < w; x++) {
+          if (isForeground(x, y)) fg++;
           total++;
         }
       }
-
-      densityGrid[gy * gridCols + gx] = total > 0 ? fgCount / total : 0;
+      occupancy[gy * GRID + gx] = total > 0 && fg / total > 0.35 ? 1 : 0;
     }
   }
 
-  // 3. Morphological dilation / smoothing to bridge interior photo detail
-  const binaryGrid = new Uint8Array(gridCols * gridRows);
-  for (let gy = 0; gy < gridRows; gy++) {
-    for (let gx = 0; gx < gridCols; gx++) {
-      let maxDensity = 0;
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const ny = gy + dy;
-          const nx = gx + dx;
-          if (nx >= 0 && nx < gridCols && ny >= 0 && ny < gridRows) {
-            maxDensity = Math.max(maxDensity, densityGrid[ny * gridCols + nx]);
-          }
-        }
-      }
-      binaryGrid[gy * gridCols + gx] = maxDensity > 0.15 ? 1 : 0;
-    }
-  }
+  const closed = fillHoles(closeGrid(occupancy, GRID, GRID), GRID, GRID);
+  const blobs = findBlobs(closed, GRID, GRID);
 
-  // 4. Group connected active grid cells into photo blobs
-  const visited = new Uint8Array(gridCols * gridRows);
-  const minCellArea = Math.floor((gridCols * gridRows) * 0.02); // >= 2% of sheet
-  const maxCellArea = Math.floor((gridCols * gridRows) * 0.85); // <= 85% of sheet
+  // --- Stage 2: refine each blob into an oriented rectangle ----------------
+  const minCells = Math.max(9, Math.floor(GRID * GRID * 0.004));
+  const maxCells = Math.floor(GRID * GRID * 0.92);
 
-  const boxes: { minGX: number; maxGX: number; minGY: number; maxGY: number }[] = [];
+  const quads: PhotoQuad[] = [];
 
-  for (let gy = 0; gy < gridRows; gy++) {
-    for (let gx = 0; gx < gridCols; gx++) {
-      const idx = gy * gridCols + gx;
-      if (binaryGrid[idx] === 1 && visited[idx] === 0) {
-        let minGX = gx, maxGX = gx, minGY = gy, maxGY = gy;
-        let count = 0;
-        const queue: number[] = [idx];
-        visited[idx] = 1;
+  for (const blob of blobs) {
+    if (blob.cells.length < minCells || blob.cells.length > maxCells) continue;
+    if (blob.maxGX - blob.minGX < 3 || blob.maxGY - blob.minGY < 3) continue;
 
-        while (queue.length > 0) {
-          const curr = queue.pop()!;
-          const cx = curr % gridCols;
-          const cy = Math.floor(curr / gridCols);
-          count++;
+    const cellSet = new Set(blob.cells);
 
-          if (cx < minGX) minGX = cx;
-          if (cx > maxGX) maxGX = cx;
-          if (cy < minGY) minGY = cy;
-          if (cy > maxGY) maxGY = cy;
+    // Collect foreground pixels inside this blob's cells, subsampled for speed.
+    const x0 = Math.floor(blob.minGX * cellW);
+    const x1 = Math.min(w, Math.ceil((blob.maxGX + 1) * cellW));
+    const y0 = Math.floor(blob.minGY * cellH);
+    const y1 = Math.min(h, Math.ceil((blob.maxGY + 1) * cellH));
 
-          const neighbors = [
-            cy > 0 ? (cy - 1) * gridCols + cx : -1,
-            cy < gridRows - 1 ? (cy + 1) * gridCols + cx : -1,
-            cx > 0 ? cy * gridCols + (cx - 1) : -1,
-            cx < gridCols - 1 ? cy * gridCols + (cx + 1) : -1,
-          ];
+    const step = Math.max(1, Math.floor(Math.max(x1 - x0, y1 - y0) / 320));
+    const pts: Point[] = [];
 
-          for (const n of neighbors) {
-            if (n >= 0 && visited[n] === 0 && binaryGrid[n] === 1) {
-              visited[n] = 1;
-              queue.push(n);
-            }
-          }
-        }
-
-        const area = count;
-        const widthCells = maxGX - minGX + 1;
-        const heightCells = maxGY - minGY + 1;
-
-        if (area >= minCellArea && area <= maxCellArea && widthCells >= 4 && heightCells >= 4) {
-          let overlaps = false;
-          for (const existing of boxes) {
-            const overlapX = Math.max(0, Math.min(maxGX, existing.maxGX) - Math.max(minGX, existing.minGX));
-            const overlapY = Math.max(0, Math.min(maxGY, existing.maxGY) - Math.max(minGY, existing.minGY));
-            const overlapArea = overlapX * overlapY;
-            if (overlapArea > area * 0.4) {
-              overlaps = true;
-              break;
-            }
-          }
-          if (!overlaps) {
-            boxes.push({ minGX, maxGX, minGY, maxGY });
-          }
-        }
+    for (let y = y0; y < y1; y += step) {
+      const gy = Math.min(GRID - 1, Math.floor(y / cellH));
+      for (let x = x0; x < x1; x += step) {
+        const gx = Math.min(GRID - 1, Math.floor(x / cellW));
+        if (!cellSet.has(gy * GRID + gx)) continue;
+        if (isForeground(x, y)) pts.push({ x, y });
       }
     }
+
+    if (pts.length < 16) continue;
+
+    const hull = convexHull(pts);
+    const rect = minAreaRect(hull);
+    if (!rect) continue;
+
+    // How much of the enclosing rectangle is actually filled? A photo fills its
+    // own bounding rectangle almost completely; a stray smudge or a caption
+    // does not. This doubles as the confidence score, so the number shown to
+    // the user finally means something instead of being a hardcoded 0.92.
+    const hullArea = polygonArea(hull);
+    const fill = rect.area > 0 ? Math.min(1, hullArea / rect.area) : 0;
+    if (fill < 0.62) continue;
+
+    // Reject slivers. Photos are not 12:1 strips; borders, captions and the
+    // fragments left when dark photo content merges into a dark page are.
+    const sideA = distance(rect.corners[0], rect.corners[1]);
+    const sideB = distance(rect.corners[1], rect.corners[2]);
+    const longest = Math.max(sideA, sideB);
+    const shortest = Math.min(sideA, sideB);
+    if (shortest < 1 || longest / shortest > 12) continue;
+
+    // Below half a degree, a "rotation" is noise in the hull. Snapping avoids
+    // resampling a photo that was already straight.
+    const useAxisAligned = Math.abs(rect.angleDeg) < 0.5;
+    const corners = useAxisAligned
+      ? ([
+          { x: Math.min(...rect.corners.map(p => p.x)), y: Math.min(...rect.corners.map(p => p.y)) },
+          { x: Math.max(...rect.corners.map(p => p.x)), y: Math.min(...rect.corners.map(p => p.y)) },
+          { x: Math.max(...rect.corners.map(p => p.x)), y: Math.max(...rect.corners.map(p => p.y)) },
+          { x: Math.min(...rect.corners.map(p => p.x)), y: Math.max(...rect.corners.map(p => p.y)) }
+        ] as [Point, Point, Point, Point])
+      : rect.corners;
+
+    const normalised = corners.map(p => ({
+      x: Math.max(0, Math.min(1, p.x / w)),
+      y: Math.max(0, Math.min(1, p.y / h))
+    })) as [Point, Point, Point, Point];
+
+    quads.push({
+      id: `quad_${Date.now()}_${quads.length}`,
+      points: normalised,
+      confidence: Math.round(fill * 100) / 100,
+      angleDeg: useAxisAligned ? 0 : Math.round(rect.angleDeg * 10) / 10,
+      label: `Photo ${quads.length + 1}`
+    });
   }
 
-  // 5. Convert grid boxes to normalized PhotoQuad objects
-  const quads: PhotoQuad[] = boxes.map((box, idx) => {
-    const pad = 0.008;
-    const left = Math.max(0, (box.minGX / gridCols) - pad);
-    const right = Math.min(1, ((box.maxGX + 1) / gridCols) + pad);
-    const top = Math.max(0, (box.minGY / gridRows) - pad);
-    const bottom = Math.min(1, ((box.maxGY + 1) / gridRows) + pad);
+  // Suppress overlapping detections, largest first.
+  //
+  // A photo whose own content is close in colour to the page - a dark sea band
+  // on a black album leaf, say - splits into pieces, and the leftover border
+  // strip comes back as a second region sitting inside the real one. Keeping
+  // the larger region and dropping anything mostly contained within it removes
+  // those duplicates without needing the split to be prevented in the first
+  // place.
+  const bySize = [...quads].sort((a, b) => polygonArea(b.points) - polygonArea(a.points));
+  const kept: PhotoQuad[] = [];
+  for (const candidate of bySize) {
+    const swallowed = kept.some(k => quadContainment(candidate.points, k.points) > 0.6);
+    if (!swallowed) kept.push(candidate);
+  }
 
-    const points: [Point, Point, Point, Point] = [
-      { x: left, y: top },
-      { x: right, y: top },
-      { x: right, y: bottom },
-      { x: left, y: bottom }
-    ];
-
-    return {
-      id: `quad_${Date.now()}_${idx}`,
-      points,
-      confidence: 0.92,
-      label: `Photo ${idx + 1}`
-    };
+  // Number them the way a person reads the page: top to bottom, left to right.
+  kept.sort((a, b) => {
+    const ay = Math.min(...a.points.map(p => p.y));
+    const by = Math.min(...b.points.map(p => p.y));
+    if (Math.abs(ay - by) > 0.05) return ay - by;
+    return Math.min(...a.points.map(p => p.x)) - Math.min(...b.points.map(p => p.x));
   });
+  kept.forEach((q, i) => { q.label = `Photo ${i + 1}`; });
 
-  if (quads.length === 0) {
-    return presetQuads && presetQuads.length > 0 ? presetQuads : createDefaultQuads();
-  }
+  return kept;
+}
 
-  return quads;
+/** A sheet decoded once, so every crop from it reuses the same pixel buffer. */
+export interface SheetPixels {
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
 }
 
 /**
- * Creates 2-4 default photo bounding regions if auto-detection misses or for clean start
+ * Decodes a sheet into a reusable pixel buffer.
+ *
+ * Extraction used to build a fresh full-resolution canvas copy of the sheet for
+ * every single crop; eight photos on a 50 MP scan meant eight redundant copies.
  */
-export function createDefaultQuads(): PhotoQuad[] {
-  return [
-    {
-      id: `quad_default_1`,
-      points: [
-        { x: 0.08, y: 0.08 },
-        { x: 0.46, y: 0.08 },
-        { x: 0.46, y: 0.46 },
-        { x: 0.08, y: 0.46 }
-      ],
-      confidence: 0.9,
-      label: 'Photo 1'
-    },
-    {
-      id: `quad_default_2`,
-      points: [
-        { x: 0.54, y: 0.08 },
-        { x: 0.92, y: 0.08 },
-        { x: 0.92, y: 0.46 },
-        { x: 0.54, y: 0.46 }
-      ],
-      confidence: 0.9,
-      label: 'Photo 2'
-    },
-    {
-      id: `quad_default_3`,
-      points: [
-        { x: 0.08, y: 0.54 },
-        { x: 0.46, y: 0.54 },
-        { x: 0.46, y: 0.92 },
-        { x: 0.08, y: 0.92 }
-      ],
-      confidence: 0.9,
-      label: 'Photo 3'
-    },
-    {
-      id: `quad_default_4`,
-      points: [
-        { x: 0.54, y: 0.54 },
-        { x: 0.92, y: 0.54 },
-        { x: 0.92, y: 0.92 },
-        { x: 0.54, y: 0.92 }
-      ],
-      confidence: 0.9,
-      label: 'Photo 4'
-    }
-  ];
+export function prepareSheet(image: HTMLImageElement | HTMLCanvasElement): SheetPixels | null {
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.drawImage(image, 0, 0);
+  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  return { data: imgData.data, width: canvas.width, height: canvas.height };
 }
 
 /**
- * Extracts, crops, and deskews a quadrilateral region from a source canvas/image
- * using high-precision perspective transformation.
+ * Crops and rectifies one quad out of a prepared sheet.
+ *
+ * Solves the true homography from the output rectangle back to the source quad,
+ * then inverse-maps every destination pixel through it with bilinear sampling.
+ * Straight lines stay straight and the interior is geometrically correct, which
+ * a bilinear corner blend cannot guarantee for a perspective view.
+ *
+ * It is also far cheaper than the previous approach, which drew the entire
+ * source image 512 times per photo (a 16x16 mesh of clipped triangle pairs) and
+ * left faint seams along every clip edge where the antialiasing met transparent
+ * pixels.
  */
 export function extractAndDeskewPhoto(
-  sourceImage: HTMLImageElement | HTMLCanvasElement,
+  sheet: SheetPixels,
   quad: PhotoQuad,
   targetWidth?: number,
   targetHeight?: number
 ): string {
-  const srcW = sourceImage.width;
-  const srcH = sourceImage.height;
+  const { data: src, width: srcW, height: srcH } = sheet;
 
-  // Convert normalized quad points to pixel points
-  const p0 = { x: quad.points[0].x * srcW, y: quad.points[0].y * srcH }; // TL
-  const p1 = { x: quad.points[1].x * srcW, y: quad.points[1].y * srcH }; // TR
-  const p2 = { x: quad.points[2].x * srcW, y: quad.points[2].y * srcH }; // BR
-  const p3 = { x: quad.points[3].x * srcW, y: quad.points[3].y * srcH }; // BL
+  const ordered = orderQuadPoints(quad.points.map(p => ({ x: p.x * srcW, y: p.y * srcH })));
+  const [p0, p1, p2, p3] = ordered;
 
-  // Calculate deskewed output dimensions based on average edge lengths
-  const topDist = distance(p0, p1);
-  const bottomDist = distance(p3, p2);
-  const leftDist = distance(p0, p3);
-  const rightDist = distance(p1, p2);
+  // Output size follows the longer of each opposing pair, so nothing is squashed.
+  let outW = targetWidth || Math.round(Math.max(distance(p0, p1), distance(p3, p2)));
+  let outH = targetHeight || Math.round(Math.max(distance(p0, p3), distance(p1, p2)));
 
-  const outW = targetWidth || Math.round(Math.max(topDist, bottomDist));
-  const outH = targetHeight || Math.round(Math.max(leftDist, rightDist));
+  outW = Math.max(1, Math.min(MAX_OUTPUT_DIM, outW));
+  outH = Math.max(1, Math.min(MAX_OUTPUT_DIM, outH));
 
-  const destCanvas = document.createElement('canvas');
-  destCanvas.width = outW;
-  destCanvas.height = outH;
-  const destCtx = destCanvas.getContext('2d');
+  const dest = document.createElement('canvas');
+  dest.width = outW;
+  dest.height = outH;
+  const destCtx = dest.getContext('2d');
   if (!destCtx) return '';
 
-  // Draw perspective warped image onto destCanvas using triangular mesh interpolation
-  // Mesh resolution: 16x16 grid for ultra-smooth perspective deskewing
-  const srcCanvas = document.createElement('canvas');
-  srcCanvas.width = srcW;
-  srcCanvas.height = srcH;
-  const srcCtx = srcCanvas.getContext('2d')!;
-  srcCtx.drawImage(sourceImage, 0, 0);
+  // Homography from destination rectangle -> source quad, i.e. the inverse map.
+  const h = solveHomography(
+    [{ x: 0, y: 0 }, { x: outW, y: 0 }, { x: outW, y: outH }, { x: 0, y: outH }],
+    [p0, p1, p2, p3]
+  );
+  if (!h) return '';
 
-  const gridX = 16;
-  const gridY = 16;
+  // When the source region is much larger than the output, point sampling
+  // aliases badly. Average a small grid of samples per output pixel instead.
+  const srcSpanX = Math.max(distance(p0, p1), distance(p3, p2));
+  const srcSpanY = Math.max(distance(p0, p3), distance(p1, p2));
+  const downscale = Math.max(srcSpanX / outW, srcSpanY / outH);
+  const ss = downscale > 1.5 ? Math.min(3, Math.round(downscale)) : 1;
+  const ssWeight = 1 / (ss * ss);
 
-  for (let gy = 0; gy < gridY; gy++) {
-    for (let gx = 0; gx < gridX; gx++) {
-      // Normalized destination cell coordinates
-      const u1 = gx / gridX;
-      const v1 = gy / gridY;
-      const u2 = (gx + 1) / gridX;
-      const v2 = (gy + 1) / gridY;
+  const out = destCtx.createImageData(outW, outH);
+  const dst = out.data;
 
-      // Destination pixel points
-      const dx1 = u1 * outW;
-      const dy1 = v1 * outH;
-      const dx2 = u2 * outW;
-      const dy2 = v2 * outH;
+  const sampleBilinear = (sx: number, sy: number, acc: Float32Array) => {
+    if (sx < 0) sx = 0; else if (sx > srcW - 1) sx = srcW - 1;
+    if (sy < 0) sy = 0; else if (sy > srcH - 1) sy = srcH - 1;
 
-      // Bilinear source mapping for 4 corners of current cell
-      const mapPoint = (u: number, v: number): Point => {
-        const topX = p0.x + u * (p1.x - p0.x);
-        const topY = p0.y + u * (p1.y - p0.y);
-        const botX = p3.x + u * (p2.x - p3.x);
-        const botY = p3.y + u * (p2.y - p3.y);
-        return {
-          x: topX + v * (botX - topX),
-          y: topY + v * (botY - topY)
-        };
-      };
+    const x0 = sx | 0;
+    const y0 = sy | 0;
+    const x1 = x0 + 1 < srcW ? x0 + 1 : x0;
+    const y1 = y0 + 1 < srcH ? y0 + 1 : y0;
+    const fx = sx - x0;
+    const fy = sy - y0;
 
-      const sp0 = mapPoint(u1, v1);
-      const sp1 = mapPoint(u2, v1);
-      const sp2 = mapPoint(u2, v2);
-      const sp3 = mapPoint(u1, v2);
+    const i00 = (y0 * srcW + x0) * 4;
+    const i10 = (y0 * srcW + x1) * 4;
+    const i01 = (y1 * srcW + x0) * 4;
+    const i11 = (y1 * srcW + x1) * 4;
 
-      // Render top-left triangle
-      drawTexturedTriangle(
-        destCtx, srcCanvas,
-        sp0, sp1, sp3,
-        { x: dx1, y: dy1 }, { x: dx2, y: dy1 }, { x: dx1, y: dy2 }
-      );
+    const w00 = (1 - fx) * (1 - fy);
+    const w10 = fx * (1 - fy);
+    const w01 = (1 - fx) * fy;
+    const w11 = fx * fy;
 
-      // Render bottom-right triangle
-      drawTexturedTriangle(
-        destCtx, srcCanvas,
-        sp1, sp2, sp3,
-        { x: dx2, y: dy1 }, { x: dx2, y: dy2 }, { x: dx1, y: dy2 }
-      );
+    for (let c = 0; c < 3; c++) {
+      acc[c] += src[i00 + c] * w00 + src[i10 + c] * w10 + src[i01 + c] * w01 + src[i11 + c] * w11;
+    }
+  };
+
+  const acc = new Float32Array(3);
+
+  for (let y = 0; y < outH; y++) {
+    for (let x = 0; x < outW; x++) {
+      acc[0] = 0; acc[1] = 0; acc[2] = 0;
+
+      for (let sy = 0; sy < ss; sy++) {
+        for (let sx = 0; sx < ss; sx++) {
+          const dx = x + (sx + 0.5) / ss;
+          const dy = y + (sy + 0.5) / ss;
+          const s = applyHomography(h, { x: dx, y: dy });
+          sampleBilinear(s.x, s.y, acc);
+        }
+      }
+
+      const o = (y * outW + x) * 4;
+      dst[o] = acc[0] * ssWeight;
+      dst[o + 1] = acc[1] * ssWeight;
+      dst[o + 2] = acc[2] * ssWeight;
+      dst[o + 3] = 255;
     }
   }
 
-  return destCanvas.toDataURL('image/png');
-}
-
-/**
- * Helper to render an affine-transformed textured triangle for perspective warp
- */
-function drawTexturedTriangle(
-  ctx: CanvasRenderingContext2D,
-  image: HTMLCanvasElement,
-  s0: Point, s1: Point, s2: Point,
-  d0: Point, d1: Point, d2: Point
-) {
-  ctx.save();
-  ctx.beginPath();
-  ctx.moveTo(d0.x, d0.y);
-  ctx.lineTo(d1.x, d1.y);
-  ctx.lineTo(d2.x, d2.y);
-  ctx.closePath();
-  ctx.clip();
-
-  // Compute affine transformation matrix mapping s0,s1,s2 -> d0,d1,d2
-  const denom = (s0.x * (s1.y - s2.y) - s1.x * (s0.y - s2.y) + s2.x * (s0.y - s1.y));
-  if (Math.abs(denom) < 0.0001) {
-    ctx.restore();
-    return;
-  }
-
-  const m11 = (d0.x * (s1.y - s2.y) - d1.x * (s0.y - s2.y) + d2.x * (s0.y - s1.y)) / denom;
-  const m12 = (d0.y * (s1.y - s2.y) - d1.y * (s0.y - s2.y) + d2.y * (s0.y - s1.y)) / denom;
-  const m21 = (s0.x * (d1.x - d2.x) - s1.x * (d0.x - d2.x) + s2.x * (d0.x - d1.x)) / denom;
-  const m22 = (s0.x * (d1.y - d2.y) - s1.x * (d0.y - d2.y) + s2.x * (d0.y - d1.y)) / denom;
-
-  const dx = d0.x - m11 * s0.x - m21 * s0.y;
-  const dy = d0.y - m12 * s0.x - m22 * s0.y;
-
-  ctx.transform(m11, m12, m21, m22, dx, dy);
-  ctx.drawImage(image, 0, 0);
-  ctx.restore();
+  destCtx.putImageData(out, 0, 0);
+  return dest.toDataURL('image/png');
 }
