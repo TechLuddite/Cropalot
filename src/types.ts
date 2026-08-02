@@ -28,7 +28,14 @@ export type OutputFormat = 'png' | 'jpeg' | 'webp';
 export interface ScanSheet {
   id: string;
   name: string;
-  dataUrl: string;
+  /**
+   * The sheet image itself.
+   *
+   * A Blob rather than a data URL: an uploaded file already is one, so there is
+   * no reason to base64 it into a string a third larger than the file and then
+   * decode it again.
+   */
+  blob: Blob;
   width: number;
   height: number;
   createdAt: number;

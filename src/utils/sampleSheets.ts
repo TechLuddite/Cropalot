@@ -1,4 +1,5 @@
 import { ScanSheet, PhotoQuad } from '../types';
+import { canvasToBlob } from './canvasCompat';
 
 /**
  * Generates three sample album pages, each returned with the exact corner
@@ -188,7 +189,7 @@ async function createVintageAlbumSheet(): Promise<ScanSheet> {
   return {
     id: 'sheet_vintage_1',
     name: '1970s Family Album Page',
-    dataUrl: canvas.toDataURL('image/png'),
+    blob: await canvasToBlob(canvas, 'image/png'),
     width: w,
     height: h,
     createdAt: Date.now() - 86400000 * 5,
@@ -256,7 +257,7 @@ async function createPolaroidScrapbookSheet(): Promise<ScanSheet> {
   return {
     id: 'sheet_polaroid_1',
     name: '1990s Polaroid Scrapbook Sheet',
-    dataUrl: canvas.toDataURL('image/png'),
+    blob: await canvasToBlob(canvas, 'image/png'),
     width: w,
     height: h,
     createdAt: Date.now() - 86400000 * 2,
@@ -320,7 +321,7 @@ async function createColorGridScanSheet(): Promise<ScanSheet> {
   return {
     id: 'sheet_grid_1',
     name: '2000s Scanner Sheet (2 Prints)',
-    dataUrl: canvas.toDataURL('image/png'),
+    blob: await canvasToBlob(canvas, 'image/png'),
     width: w,
     height: h,
     createdAt: Date.now() - 86400000,

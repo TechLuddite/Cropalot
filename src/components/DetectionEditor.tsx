@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { PhotoQuad, ScanSheet, Point, AppSettings, FilterSettings } from '../types';
-import { detectPhotoQuads, extractAndDeskewPhoto, prepareSheet, quadIoU, canvasToBlob } from '../utils/cvEngine';
+import { quadIoU } from '../utils/cvEngine';
+import { detectPhotos, extractPhotos } from '../utils/cvClient';
 import { orderQuadPoints } from '../utils/geometry';
 import { PhotoRecord } from '../utils/photoStore';
 import { renderThumb } from '../utils/imageProcessing';
@@ -24,17 +25,6 @@ const NEUTRAL_FILTERS: FilterSettings = {
   trimMargin: 0,
   preset: 'none'
 };
-
-/** Loads a data URL into an <img>, rejecting rather than hanging on failure. */
-function loadImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('decode failed'));
-    img.src = src;
-  });
-}
 
 interface DetectionEditorProps {
   sheet: ScanSheet;
@@ -65,10 +55,18 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
   const [accuracy, setAccuracy] = useState<{ meanIoU: number; matched: number; expected: number } | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [captureDate, setCaptureDate] = useState<string>(sheet.captureDate ?? '');
+  const [sheetUrl, setSheetUrl] = useState<string | null>(null);
+
+  // Display URL for the sheet, released when the sheet changes or we unmount.
+  useEffect(() => {
+    const url = URL.createObjectURL(sheet.blob);
+    setSheetUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [sheet.blob]);
 
   // Auto-detect on mount if no quads exist
   useEffect(() => {
-    if ((!sheet.quads || sheet.quads.length === 0) && sheet.dataUrl && settings.autoDetectOnUpload) {
+    if ((!sheet.quads || sheet.quads.length === 0) && settings.autoDetectOnUpload) {
       runAutoDetection(sensitivity);
     } else if (sheet.quads && sheet.quads.length > 0) {
       setQuads(sheet.quads);
@@ -107,12 +105,10 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
   };
 
   const runAutoDetection = async (withSensitivity: number) => {
-    if (!sheet.dataUrl) return;
     setIsDetecting(true);
     setError(null);
     try {
-      const img = await loadImage(sheet.dataUrl);
-      const detected = await detectPhotoQuads(img, withSensitivity);
+      const detected = await detectPhotos(sheet.blob, withSensitivity);
       setQuads(detected);
       setSelectedQuadId(detected.length > 0 ? detected[0].id : null);
       scoreAgainstGroundTruth(detected);
@@ -335,56 +331,43 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
 
   // Crop each selected region out of the sheet at full source resolution
   const handleExtractAll = async () => {
-    if (quads.length === 0 || !sheet.dataUrl) return;
+    if (quads.length === 0) return;
     setIsExtracting(true);
     setError(null);
     setProgress({ done: 0, total: quads.length });
 
     try {
-      const img = await loadImage(sheet.dataUrl);
+      const crops = await extractPhotos(sheet.blob, quads, (done, total) =>
+        setProgress({ done, total })
+      );
 
-      // Decode the sheet once and reuse the buffer for every crop.
-      const pixels = prepareSheet(img);
-      if (!pixels) throw new Error('could not read sheet pixels');
-
-      const extracted: PhotoRecord[] = [];
-      const stamp = Date.now();
-
-      for (let i = 0; i < quads.length; i++) {
-        const quad = quads[i];
-        const canvas = extractAndDeskewPhoto(pixels, quad);
-        if (!canvas) continue;
-
-        // PNG for the stored master: the crop is the archival copy, and every
-        // export re-renders from it, so it must not accumulate lossy generations.
-        const original = await canvasToBlob(canvas, 'image/png');
-        const thumb = await renderThumb(original, NEUTRAL_FILTERS, 0);
-
-        extracted.push({
-          id: `photo_${stamp}_${i}`,
-          sheetId: sheet.id,
-          title: quad.label || `${sheet.name}_Photo_${i + 1}`,
-          captureDate: captureDate.trim() || undefined,
-          tags: ['Scan'],
-          quad,
-          width: canvas.width,
-          height: canvas.height,
-          rotation: 0,
-          filters: { ...NEUTRAL_FILTERS },
-          createdAt: stamp + i,
-          original,
-          thumb
-        });
-
-        setProgress({ done: i + 1, total: quads.length });
-        // Yield so the progress counter repaints between photos.
-        await new Promise(r => setTimeout(r, 0));
-      }
-
-      if (extracted.length === 0) {
+      if (crops.length === 0) {
         setError('Nothing could be extracted from these regions.');
         return;
       }
+
+      const stamp = Date.now();
+      const extracted: PhotoRecord[] = [];
+
+      for (let i = 0; i < crops.length; i++) {
+        const crop = crops[i];
+        extracted.push({
+          id: `photo_${stamp}_${i}`,
+          sheetId: sheet.id,
+          title: quads[i]?.label || `${sheet.name}_Photo_${i + 1}`,
+          captureDate: captureDate.trim() || undefined,
+          tags: ['Scan'],
+          quad: quads[i],
+          width: crop.width,
+          height: crop.height,
+          rotation: 0,
+          filters: { ...NEUTRAL_FILTERS },
+          createdAt: stamp + i,
+          original: crop.blob,
+          thumb: await renderThumb(crop.blob, NEUTRAL_FILTERS, 0)
+        });
+      }
+
       onPhotosExtracted(extracted);
     } catch (err) {
       console.error('Extraction failed', err);
@@ -552,12 +535,12 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
         onTouchCancel={handleTouchEnd}
         className="relative bg-slate-950 border border-slate-800 rounded-3xl p-2 sm:p-4 flex items-center justify-center overflow-hidden min-h-[350px] sm:min-h-[500px] select-none shadow-2xl"
       >
-        {sheet.dataUrl ? (
+        {sheetUrl ? (
           <div className="relative max-w-full max-h-[65vh] flex items-center justify-center">
             {/* Base Scan Sheet Image */}
             <img
               ref={imageRef}
-              src={sheet.dataUrl}
+              src={sheetUrl}
               alt="Scan Sheet"
               className="max-w-full max-h-[65vh] object-contain rounded-xl shadow-2xl block"
               draggable={false}

@@ -17,43 +17,37 @@ export const SheetUploader: React.FC<SheetUploaderProps> = ({ onSheetSelected, o
   const [loadError, setLoadError] = useState<string | null>(null);
 
   // Handle custom file upload
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setLoadError(null);
 
-    const reader = new FileReader();
-    reader.onerror = () => setLoadError(`Could not read "${file.name}".`);
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      const img = new Image();
-      img.onload = () => {
-        const newSheet: ScanSheet = {
-          id: `sheet_upload_${Date.now()}`,
-          name: file.name.replace(/\.[^/.]+$/, ''),
-          dataUrl,
-          width: img.width,
-          height: img.height,
-          createdAt: Date.now(),
-          quads: [] // Will auto-detect in editor
-        };
-        onSheetSelected(newSheet);
-      };
+    // The File is already a Blob, so it goes straight through - no FileReader,
+    // no base64 copy of the whole scan sitting in memory as a string.
+    try {
+      const bitmap = await createImageBitmap(file);
+      onSheetSelected({
+        id: `sheet_upload_${Date.now()}`,
+        name: file.name.replace(/\.[^/.]+$/, ''),
+        blob: file,
+        width: bitmap.width,
+        height: bitmap.height,
+        createdAt: Date.now(),
+        quads: []
+      });
+      bitmap.close();
+    } catch {
       // Browsers cannot decode every format a scanner emits - TIFF and HEIC in
-      // particular fail here. Without this handler the app simply did nothing
-      // and left the user staring at an unchanged screen.
-      img.onerror = () => {
-        const ext = file.name.match(/\.([^.]+)$/)?.[1]?.toUpperCase();
-        setLoadError(
-          ext && /^(TIF|TIFF|HEIC|HEIF)$/.test(ext)
-            ? `Your browser cannot open ${ext} files. Convert the scan to JPEG, PNG or WebP and try again.`
-            : `Could not decode "${file.name}". Try a JPEG, PNG or WebP version of this scan.`
-        );
-      };
-      img.src = dataUrl;
-    };
-    reader.readAsDataURL(file);
+      // particular fail here. Without this the app simply did nothing and left
+      // the user staring at an unchanged screen.
+      const ext = file.name.match(/\.([^.]+)$/)?.[1]?.toUpperCase();
+      setLoadError(
+        ext && /^(TIF|TIFF|HEIC|HEIF)$/.test(ext)
+          ? `Your browser cannot open ${ext} files. Convert the scan to JPEG, PNG or WebP and try again.`
+          : `Could not decode "${file.name}". Try a JPEG, PNG or WebP version of this scan.`
+      );
+    }
   };
 
   // Handle sample load
