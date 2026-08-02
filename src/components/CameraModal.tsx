@@ -40,23 +40,37 @@ export const CameraModal: React.FC<CameraModalProps> = ({ onCapture, onClose }) 
     };
   }, []);
 
-  const handleSnap = () => {
+  const handleSnap = async () => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas) return;
 
-    canvas.width = video.videoWidth || 1280;
-    canvas.height = video.videoHeight || 720;
+    // Capturing before the first frame arrives yields a blank image, so wait
+    // for real dimensions rather than falling back to a 1280x720 of nothing.
+    if (!video.videoWidth || !video.videoHeight) {
+      setErrorMsg('The camera is still starting up. Try again in a moment.');
+      return;
+    }
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL('image/png');
+
+    const blob = await new Promise<Blob | null>(resolve =>
+      canvas.toBlob(resolve, 'image/jpeg', 0.95)
+    );
+    if (!blob) {
+      setErrorMsg('Could not capture a frame from the camera.');
+      return;
+    }
 
     const newSheet: ScanSheet = {
       id: `sheet_camera_${Date.now()}`,
       name: `Camera Scan ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
-      dataUrl,
+      blob,
       width: canvas.width,
       height: canvas.height,
       createdAt: Date.now(),

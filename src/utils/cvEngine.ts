@@ -1,5 +1,12 @@
 import { Point, PhotoQuad } from '../types';
 import {
+  AnyCanvas,
+  DrawableSource,
+  createCanvas,
+  get2d,
+  canvasToBlob as encodeCanvas
+} from './canvasCompat';
+import {
   convexHull,
   distance,
   minAreaRect,
@@ -223,22 +230,20 @@ function findBlobs(grid: Uint8Array, cols: number, rows: number): Region[] {
  * not hand-corrected.
  */
 export async function detectPhotoQuads(
-  imageElement: HTMLImageElement | HTMLCanvasElement,
+  imageElement: DrawableSource,
   sensitivity: number = 5
 ): Promise<PhotoQuad[]> {
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) return [];
-
   const srcW = imageElement.width;
   const srcH = imageElement.height;
   const scale = Math.min(1, DETECT_MAX_DIM / Math.max(srcW, srcH));
   const w = Math.max(1, Math.floor(srcW * scale));
   const h = Math.max(1, Math.floor(srcH * scale));
 
-  canvas.width = w;
-  canvas.height = h;
-  ctx.drawImage(imageElement, 0, 0, w, h);
+  const canvas = createCanvas(w, h);
+  const ctx = get2d(canvas, { willReadFrequently: true });
+  if (!ctx) return [];
+
+  ctx.drawImage(imageElement as CanvasImageSource, 0, 0, w, h);
   const pixels = ctx.getImageData(0, 0, w, h).data;
 
   const [bgR, bgG, bgB] = estimateBackground(pixels, w, h);
@@ -400,13 +405,11 @@ export interface SheetPixels {
  * Extraction used to build a fresh full-resolution canvas copy of the sheet for
  * every single crop; eight photos on a 50 MP scan meant eight redundant copies.
  */
-export function prepareSheet(image: HTMLImageElement | HTMLCanvasElement): SheetPixels | null {
-  const canvas = document.createElement('canvas');
-  canvas.width = image.width;
-  canvas.height = image.height;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+export function prepareSheet(image: DrawableSource): SheetPixels | null {
+  const canvas = createCanvas(image.width, image.height);
+  const ctx = get2d(canvas, { willReadFrequently: true });
   if (!ctx) return null;
-  ctx.drawImage(image, 0, 0);
+  ctx.drawImage(image as CanvasImageSource, 0, 0);
   const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   return { data: imgData.data, width: canvas.width, height: canvas.height };
 }
@@ -429,7 +432,7 @@ export function extractAndDeskewPhoto(
   quad: PhotoQuad,
   targetWidth?: number,
   targetHeight?: number
-): HTMLCanvasElement | null {
+): AnyCanvas | null {
   const { data: src, width: srcW, height: srcH } = sheet;
 
   const ordered = orderQuadPoints(quad.points.map(p => ({ x: p.x * srcW, y: p.y * srcH })));
@@ -442,10 +445,8 @@ export function extractAndDeskewPhoto(
   outW = Math.max(1, Math.min(MAX_OUTPUT_DIM, outW));
   outH = Math.max(1, Math.min(MAX_OUTPUT_DIM, outH));
 
-  const dest = document.createElement('canvas');
-  dest.width = outW;
-  dest.height = outH;
-  const destCtx = dest.getContext('2d');
+  const dest = createCanvas(outW, outH);
+  const destCtx = get2d(dest);
   if (!destCtx) return null;
 
   // Homography from destination rectangle -> source quad, i.e. the inverse map.
@@ -520,22 +521,11 @@ export function extractAndDeskewPhoto(
 }
 
 /**
- * Encodes a canvas to a Blob.
+ * Encodes a crop to a Blob.
  *
- * Crops are handed around as Blobs rather than data URLs: base64 inflates the
+ * Crops are passed around as Blobs rather than data URLs: base64 inflates the
  * payload by a third, and every conversion allocates the whole thing again as a
  * JavaScript string.
  */
-export function canvasToBlob(
-  canvas: HTMLCanvasElement,
-  type = 'image/png',
-  quality?: number
-): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      blob => (blob ? resolve(blob) : reject(new Error('encoding failed'))),
-      type,
-      quality
-    );
-  });
-}
+export const canvasToBlob = encodeCanvas;
+

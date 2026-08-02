@@ -22,10 +22,9 @@ Your browser reads that line before a single line of our JavaScript executes, an
 
 So the audit is one line long. View source, read the `<meta>` tag, done. You don't have to read the other four thousand.
 
-Two things worth knowing about the honest limits of this:
+One thing worth knowing about the honest limits of this:
 
 - **It is not a proof about the server.** Code running in a page can't prove its own integrity — anything that could tamper with the app could tamper with a self-check the app displays. That's why Cropalot shows you its commit SHA and instructions to rebuild it yourself, and does **not** show you a green "verified" badge it drew for itself. (An earlier version did exactly that, hashing copies of its own source that were embedded in the same bundle it was checking. It has been removed; it proved nothing.)
-- **Reloading still needs the network.** Once the page is open you can go offline and keep working. Refresh the tab and you'll need a connection to fetch the app again — installable offline support is on the roadmap, not shipped.
 
 ### Verify it yourself
 
@@ -41,6 +40,8 @@ npm ci && npm run build && sha256sum dist/assets/*.js
 
 Or just open DevTools → Network and crop a sheet. Nothing goes out. If anything ever tried, the Console would show a CSP violation rather than quietly allowing it.
 
+Better still: load the page once, turn on airplane mode, and **reload**. It still opens, because the app precaches itself and never needed the network to begin with.
+
 ---
 
 ## ✨ What it does today
@@ -54,6 +55,8 @@ Or just open DevTools → Network and crop a sheet. Nothing goes out. If anythin
 - **Capture dates written as EXIF** — tag an album page with the year it's from and exported JPEGs carry `DateTimeOriginal`, so 300 scanned photos file themselves under 1974 in your photo app instead of piling up under today.
 - **Export as JPEG, PNG or WebP** at a quality you choose, either as a ZIP or — on Chromium browsers — written straight into a folder you pick, one file per photo.
 - **A library that actually persists** — photos live in IndexedDB as Blobs, so the quota is a share of free disk rather than the ~5 MB an origin gets in `localStorage`.
+- **Installable, and genuinely offline** — the build precaches itself, so you can cut your connection, reload, and keep working. Install it and it registers as a handler for image files, so "Open with Cropalot" appears in your OS.
+- **Off the main thread** — detection and rectification run in a Web Worker on an `OffscreenCanvas`, with the sheet transferred rather than copied. The UI keeps painting at full rate while a 16-megapixel scan is processed.
 - **Camera capture** — grab a page with a phone or webcam instead of a scanner.
 - **Sample sheets that double as a benchmark** — three generated album pages, each carrying the exact corners of the photos drawn onto it. Detection runs on them for real and the editor shows the resulting mean IoU against those known corners, so accuracy regressions are visible rather than hidden. Currently **0.93–0.99 IoU, all photos found**.
 
@@ -61,8 +64,6 @@ Or just open DevTools → Network and crop a sheet. Nothing goes out. If anythin
 
 Being straight with you about where this currently falls short:
 
-- **Big sheets can freeze the tab.** Detection and cropping run on the main thread. A 50-megapixel flatbed scan with eight photos on it will hurt. Web Worker offload is planned.
-- **No installable offline mode yet.** Once loaded you can work disconnected, but a reload needs the network. Service worker + manifest is the next step.
 - **JPEG, PNG and WebP only.** Browsers can't decode TIFF or HEIC in an `<img>`; convert those first. Cropalot now tells you instead of doing nothing.
 
 ---
@@ -71,7 +72,8 @@ Being straight with you about where this currently falls short:
 
 - **React 19 + TypeScript**, built with **Vite 6**
 - **Tailwind CSS v4**, **Lucide** icons
-- **Canvas 2D** for all image analysis and rendering — plain JavaScript, no WASM, no native deps
+- **Canvas 2D / OffscreenCanvas** in a **Web Worker** for all image analysis and rendering — plain JavaScript, no WASM, no native deps
+- **Service worker** precaching a build-time-generated asset manifest (no Workbox)
 - Convex hull, rotating-calipers minimum-area rectangle, Sutherland–Hodgman clipping and an 8×8 homography solve, all hand-rolled in `src/utils/geometry.ts`
 - **IndexedDB** for the photo library (Blobs, not base64), **File System Access API** for folder export where available
 - **JSZip** + **FileSaver.js** for the ZIP fallback
@@ -95,6 +97,7 @@ npm run dev      # http://localhost:3000
 | `npm run build` | Production build into `dist/` |
 | `npm run preview` | Serve the production build locally |
 | `npm run lint` | TypeScript type check (`tsc --noEmit`) |
+| `npm run icons` | Regenerate the PWA icons in `public/` (needs `npm i -D playwright-core` first; the icons are committed, so this is only for changing the mark) |
 
 > The dev server relaxes `connect-src` so hot-reload's WebSocket works — see the `devCspRelax` plugin in `vite.config.ts`. It is scoped to `apply: 'serve'` and never runs during a build, so production ships the policy exactly as written in `index.html`.
 
@@ -105,15 +108,20 @@ npm run dev      # http://localhost:3000
 ```
 Cropalot/
 ├── index.html                      # App shell + the Content-Security-Policy
-├── vite.config.ts                  # Build config, dev CSP relaxation, commit-SHA injection
-├── metadata.json                   # Applet manifest
+├── vite.config.ts                  # Build config, dev CSP relaxation, SW generation, commit SHA
+├── public/                         # Manifest + PWA icons (regenerate with `npm run icons`)
+├── scripts/make-icons.mjs          # Icon generator
 └── src/
     ├── main.tsx                    # Entry point
     ├── App.tsx                     # Top-level state & tab routing
     ├── types.ts                    # Shared TypeScript types
+    ├── workers/cv.worker.ts        # Detection + rectification, off the main thread
     ├── utils/
     │   ├── geometry.ts             # Hull, min-area rect, polygon clipping, homography solver
     │   ├── cvEngine.ts             # Detection pipeline + homography warp
+    │   ├── cvClient.ts             # Worker dispatch with inline fallback
+    │   ├── canvasCompat.ts         # Canvas helpers usable on either thread
+    │   ├── offline.ts              # Service worker registration & readiness
     │   ├── imageProcessing.ts      # Rendering, filters, ZIP & folder export
     │   ├── photoStore.ts           # IndexedDB Blob library
     │   ├── exif.ts                 # EXIF writer for capture dates

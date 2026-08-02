@@ -1,6 +1,7 @@
 import { FilterSettings, OutputFormat } from '../types';
 import { PhotoRecord } from './photoStore';
 import { parseCaptureDate, withExif } from './exif';
+import { createCanvas, get2d, canvasToBlob, decodeBlob, release } from './canvasCompat';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 
@@ -23,38 +24,6 @@ export function extensionFor(format: OutputFormat): string {
   return EXTENSION[format] ?? 'png';
 }
 
-/** Decodes a Blob to an ImageBitmap, falling back to <img> where unsupported. */
-async function decode(blob: Blob): Promise<ImageBitmap | HTMLImageElement> {
-  if (typeof createImageBitmap === 'function') {
-    try {
-      return await createImageBitmap(blob);
-    } catch {
-      /* fall through to the <img> path */
-    }
-  }
-  const url = URL.createObjectURL(blob);
-  try {
-    return await new Promise<HTMLImageElement>((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error('decode failed'));
-      img.src = url;
-    });
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
-
-function canvasToBlob(canvas: HTMLCanvasElement, format: OutputFormat, quality: number): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      blob => (blob ? resolve(blob) : reject(new Error('encoding failed'))),
-      MIME[format],
-      format === 'png' ? undefined : quality
-    );
-  });
-}
-
 export interface RenderOptions {
   filters: FilterSettings;
   rotation?: number;
@@ -75,7 +44,7 @@ export interface RenderOptions {
 export async function renderPhoto(source: Blob, options: RenderOptions): Promise<Blob> {
   const { filters, rotation = 0, maxDim, format = 'png', quality = 0.92 } = options;
 
-  const decoded = await decode(source);
+  const decoded = await decodeBlob(source);
   const srcW = decoded.width;
   const srcH = decoded.height;
 
@@ -98,10 +67,8 @@ export async function renderPhoto(source: Blob, options: RenderOptions): Promise
     outH = Math.max(1, Math.round(outH * s));
   }
 
-  const canvas = document.createElement('canvas');
-  canvas.width = outW;
-  canvas.height = outH;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const canvas = createCanvas(outW, outH);
+  const ctx = get2d(canvas, { willReadFrequently: true });
   if (!ctx) throw new Error('canvas unavailable');
 
   ctx.imageSmoothingEnabled = true;
@@ -112,10 +79,10 @@ export async function renderPhoto(source: Blob, options: RenderOptions): Promise
   ctx.rotate((quarterTurns * 90 * Math.PI) / 180);
   const drawW = swapsAxes ? outH : outW;
   const drawH = swapsAxes ? outW : outH;
-  ctx.drawImage(decoded, cropX, cropY, cropW, cropH, -drawW / 2, -drawH / 2, drawW, drawH);
+  ctx.drawImage(decoded as CanvasImageSource, cropX, cropY, cropW, cropH, -drawW / 2, -drawH / 2, drawW, drawH);
   ctx.restore();
 
-  if ('close' in decoded) decoded.close();
+  release(decoded);
 
   const hasAdjustments =
     filters.preset !== 'none' ||
@@ -135,7 +102,7 @@ export async function renderPhoto(source: Blob, options: RenderOptions): Promise
     applySharpen(ctx, outW, outH, filters.sharpen / 100);
   }
 
-  return canvasToBlob(canvas, format, quality);
+  return canvasToBlob(canvas, MIME[format], format === 'png' ? undefined : quality);
 }
 
 /** Convenience wrapper producing the gallery preview. */
@@ -265,7 +232,7 @@ function vividColorBoost(data: Uint8ClampedArray) {
   }
 }
 
-function applySharpen(ctx: CanvasRenderingContext2D, w: number, h: number, amount: number) {
+function applySharpen(ctx: ReturnType<typeof get2d> & object, w: number, h: number, amount: number) {
   if (w < 3 || h < 3) return;
 
   const imgData = ctx.getImageData(0, 0, w, h);

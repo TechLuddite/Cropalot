@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ShieldCheck, WifiOff, HardDrive, Lock, Cpu, CheckCircle2, X, Terminal, Heart, GitBranch } from 'lucide-react';
 import { BuildProvenance } from './BuildProvenance';
+import { getOfflineStatus, onOfflineStatusChange, OfflineStatus } from '../utils/offline';
 
 interface OfflinePrivacyModalProps {
   isOpen: boolean;
@@ -10,6 +11,9 @@ interface OfflinePrivacyModalProps {
 
 export const OfflinePrivacyModal: React.FC<OfflinePrivacyModalProps> = ({ isOpen, onClose, openSupportModal }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'technical' | 'verify' | 'build'>('overview');
+  const [offlineStatus, setOfflineStatus] = useState<OfflineStatus>(getOfflineStatus);
+
+  useEffect(() => onOfflineStatusChange(setOfflineStatus), []);
 
   if (!isOpen) return null;
 
@@ -137,17 +141,33 @@ export const OfflinePrivacyModal: React.FC<OfflinePrivacyModalProps> = ({ isOpen
                     <span>Local Device Storage</span>
                   </div>
                   <p className="text-xs text-slate-400 leading-relaxed">
-                    Extracted photo results reside exclusively in your browser's sandboxed <code className="bg-slate-800 px-1 py-0.5 rounded text-[11px] text-emerald-300">localStorage</code> and temporary memory cache.
+                    Extracted photos live in your browser's sandboxed <code className="bg-slate-800 px-1 py-0.5 rounded text-[11px] text-emerald-300">IndexedDB</code> on this device, and are deleted when you clear the library or your site data.
                   </p>
                 </div>
 
+                {/* Reports what is actually cached on this device, rather than
+                    asserting offline support in the abstract. */}
                 <div className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-1.5">
                   <div className="flex items-center gap-2 text-white font-bold text-xs">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                    <span>Works Disconnected</span>
+                    {offlineStatus === 'ready' ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    ) : (
+                      <WifiOff className="w-4 h-4 text-slate-500 shrink-0" />
+                    )}
+                    <span>
+                      {offlineStatus === 'ready'
+                        ? 'Installed For Offline Use'
+                        : offlineStatus === 'installing'
+                        ? 'Preparing Offline Use…'
+                        : 'Offline Install Unavailable'}
+                    </span>
                   </div>
                   <p className="text-xs text-slate-400 leading-relaxed">
-                    Once this page has loaded you can disconnect entirely and keep scanning, cropping, and exporting. Reloading the tab still needs a connection to fetch the app again &mdash; offline install is on the roadmap.
+                    {offlineStatus === 'ready'
+                      ? 'This build is cached on your device. Turn off your connection, reload the tab, and Cropalot still opens and works. Try it.'
+                      : offlineStatus === 'installing'
+                      ? 'Caching the app now. Once this finishes you can reload with no connection at all.'
+                      : 'Your browser will not cache the app here, so a reload needs a connection. Everything still runs locally once loaded. Private browsing usually causes this.'}
                   </p>
                 </div>
               </div>
@@ -239,11 +259,11 @@ export const OfflinePrivacyModal: React.FC<OfflinePrivacyModalProps> = ({ isOpen
                   <span>The Airplane Mode Test (Easiest)</span>
                 </div>
                 <ol className="list-decimal list-inside text-xs text-slate-400 space-y-1.5 pl-1 leading-relaxed">
-                  <li>Load Cropalot in your browser.</li>
+                  <li>Load Cropalot once, so it caches itself on your device.</li>
                   <li>Turn on <strong>Airplane Mode</strong> or disconnect your Wi-Fi/Ethernet.</li>
-                  <li>Upload a photo sheet scan or capture a camera image.</li>
-                  <li>Perform auto-crop, deskew, adjustments, and download your ZIP.</li>
-                  <li className="text-emerald-300 font-medium">Notice how everything runs smoothly with zero internet connection!</li>
+                  <li><strong>Reload the page.</strong> It still opens &mdash; nothing was fetched.</li>
+                  <li>Upload a photo sheet scan, crop, deskew, adjust and export your ZIP.</li>
+                  <li className="text-emerald-300 font-medium">All of it runs with no connection, because none of it needs one.</li>
                 </ol>
               </div>
 
