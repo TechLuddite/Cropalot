@@ -1,143 +1,144 @@
 # Cropalot 📸✂️
 
-> **Privacy-First, 100% Offline Multi-Photo Auto-Crop & Deskew Tool for Digitizing Family Photo Sheets**
+> **Browser-only multi-photo crop & straighten tool for digitizing family photo sheets**
 
-**Cropalot** is a high-performance web application designed to automatically detect, separate, auto-crop, and deskew individual photographs scanned or photographed together on a single album sheet or flatbed scanner. Everything runs **100% locally in the browser** using client-side HTML5 Canvas and WebAssembly algorithms — zero photo data ever leaves your computer or mobile device.
+**Cropalot** takes a scan or photo of an album page holding several photographs and helps you pull each picture out as its own image file. Everything happens inside your browser — no account, no upload, no server.
 
----
-
-## 🌟 Key Features
-
-- **⚡ Instant Multi-Photo Detection**: Automatically scans image sheets and isolates multiple photos into individual bounding quadrilaterals.
-- **📐 Auto-Deskew & Perspective Correction**: Detects rotation angles and applies inverse perspective transformations to square up crooked scans.
-- **🎯 Precision Corner Editing**: Interactive 4-point corner drag controls and fine-tuning handles for pixel-perfect adjustments when automatic detection needs tweaking.
-- **🔒 Private & Offline First**: Zero server uploads, zero remote tracking, zero analytics scripts. Fully operational without an internet connection.
-- **📦 Batch Zip Export**: Export individual high-quality crops in PNG or JPEG format with customizable compression and metadata options in a single `.zip` download.
-- **📱 Responsive & Mobile-Optimized**: Supports camera capture directly from mobile devices and desktop webcams, alongside a preview mode for desktop and Android layouts.
-- **✨ Sample Sheet Testing**: Built-in test photo sheets allowing instant testing without needing immediate uploads.
+**[Try it →](https://techluddite.github.io/Cropalot/)**
 
 ---
 
-## 🛡️ Privacy & Security Architecture
+## 🔒 The privacy guarantee, and why you don't have to take our word for it
 
-Cropalot was built from the ground up for absolute privacy:
+Most tools tell you they don't upload your photos. Cropalot arranges for your browser to make it impossible.
 
-1. **Client-Side Execution**: All image manipulation (pixel analysis, edge detection, perspective warp transformations, and file compression) is performed entirely on your CPU/GPU via client-side JavaScript, WebAssembly, and Canvas API.
-2. **Zero Telemetry**: No third-party analytics (e.g., Google Analytics, Mixpanel, Sentry) or tracking cookies are included.
-3. **No External API Dependencies**: Does not send photos or metadata to cloud endpoints or AI models.
-4. **Air-Gap Capable**: Once loaded, the application operates completely air-gapped without needing any network connectivity.
-
----
-
-## 🔬 Computer Vision & Processing Pipeline
-
-The image processing pipeline follows these technical steps:
-
-1. **Image Preprocessing & Downscaling**:
-   - The original image sheet is ingested onto an offscreen canvas and downscaled for high-speed edge detection analysis while preserving original resolution references for final export renders.
-
-2. **Contrast & Color Quantization**:
-   - Analyzes pixel luminosity variances across background photo album pages or scanner beds to distinguish photo boundaries from backing material.
-
-3. **Bounding Quadrilateral Detection**:
-   - Identifies candidate photo regions, calculates minimum bounding rectangles, and extracts top-left, top-right, bottom-right, and bottom-left coordinate vectors.
-
-4. **Homography & Perspective Transformation**:
-   - Maps arbitrary 4-point quadrilateral selections back to rectangular coordinate spaces, compensating for tilt, skew, and perspective distortion caused by camera angles.
-
-5. **Resolution Loss Prevention**:
-   - Crops are rendered directly from source resolution image buffers during export, ensuring full dpi fidelity is retained.
-
----
-
-## 🛠️ Tech Stack
-
-- **Frontend**: React 18, TypeScript, Vite
-- **Styling**: Tailwind CSS v4, Lucide React Icons
-- **Animation**: Motion (`motion/react`)
-- **Archiving & Download**: JSZip, FileSaver.js
-- **Runtime**: Client-side Node.js / Vite build environment with Express fallback middleware
-
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-
-- **Node.js**: `v18.x` or higher
-- **npm**: `v9.x` or higher
-
-### Installation
-
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/TechLuddite/Cropalot.git
-   cd cropalot
-   ```
-
-2. **Install dependencies**:
-   ```bash
-   npm install
-   ```
-
-3. **Start the development server**:
-   ```bash
-   npm run dev
-   ```
-   Open your browser and navigate to `http://localhost:3000`.
-
-### Scripts
-
-- `npm run dev` - Starts local Vite dev server on port 3000.
-- `npm run build` - Builds production distribution artifacts in `dist/`.
-- `npm run lint` - Runs TypeScript type check (`tsc --noEmit`).
-
----
-
-## 📂 Project Structure
+`index.html` ships this Content-Security-Policy:
 
 ```
-cropalot/
-├── public/                 # Static assets & icons
-├── src/
-│   ├── components/         # UI Components
-│   │   ├── Navbar.tsx      # Application header & navigation
-│   │   ├── SheetUploader.tsx# Drag-and-drop & sample loader
-│   │   ├── CropEditor.tsx  # Main interactive canvas editor
-│   │   ├── PhotoGallery.tsx# Extracted photo gallery & export
-│   │   ├── SettingsModal.tsx# Application configuration dialog
-│   │   ├── SupportModal.tsx # Development support & credits pop-out
-│   │   └── ...
-│   ├── utils/              # Computer vision & processing algorithms
-│   │   ├── autoCropEngine.ts# Edge detection & quad processing
-│   │   ├── sampleSheets.ts  # Pre-built sample photo sheets
-│   │   └── ...
-│   ├── types.ts            # Global TypeScript definitions
-│   ├── App.tsx             # Main application state & workflow coordinator
-│   └── main.tsx            # Application entry point
-├── metadata.json           # Applet permissions & capabilities
-├── package.json            # Project dependencies & scripts
-└── README.md               # Project documentation
+connect-src 'none'
+```
+
+Your browser reads that line before a single line of our JavaScript executes, and then refuses every outbound request this page can attempt — `fetch`, `XMLHttpRequest`, WebSocket, `EventSource`, `sendBeacon`. There is no code we could write, or that anyone could later add, that transmits your photos while that line is present.
+
+So the audit is one line long. View source, read the `<meta>` tag, done. You don't have to read the other four thousand.
+
+Two things worth knowing about the honest limits of this:
+
+- **It is not a proof about the server.** Code running in a page can't prove its own integrity — anything that could tamper with the app could tamper with a self-check the app displays. That's why Cropalot shows you its commit SHA and instructions to rebuild it yourself, and does **not** show you a green "verified" badge it drew for itself. (An earlier version did exactly that, hashing copies of its own source that were embedded in the same bundle it was checking. It has been removed; it proved nothing.)
+- **Reloading still needs the network.** Once the page is open you can go offline and keep working. Refresh the tab and you'll need a connection to fetch the app again — installable offline support is on the roadmap, not shipped.
+
+### Verify it yourself
+
+```bash
+# What this page served you
+curl -s https://techluddite.github.io/Cropalot/assets/*.js | sha256sum
+
+# Build the same commit and compare
+git clone https://github.com/TechLuddite/Cropalot && cd Cropalot
+git checkout <commit shown in the app's "This Build" tab>
+npm ci && npm run build && sha256sum dist/assets/*.js
+```
+
+Or just open DevTools → Network and crop a sheet. Nothing goes out. If anything ever tried, the Console would show a CSP violation rather than quietly allowing it.
+
+---
+
+## ✨ What it does today
+
+- **Multi-photo detection** — finds the photos on a page by estimating the background colour and grouping the regions that differ from it, then places a box around each one.
+- **Manual 4-corner adjustment** — drag any corner, with a 3× magnifier for precision. This is the reliable path, and on angled shots it's currently the *only* path (see Limitations).
+- **Crop & straighten** — maps your quadrilateral back to a rectangle.
+- **Non-destructive editing** — extraction gives you the pixels as cropped. Colour and tone corrections are opt-in in the enhancer and are applied on top of a preserved original.
+- **Enhancement presets** — auto-fix, vintage restore, B&W, sepia, vivid, plus brightness / contrast / saturation / warmth / sharpen / edge-trim sliders.
+- **Batch ZIP export** — download every crop in one archive.
+- **Camera capture** — grab a page with a phone or webcam instead of a scanner.
+- **Sample sheets** — three generated album pages for trying it out without uploading anything.
+
+## ⚠️ Limitations worth knowing before you rely on it
+
+Being straight with you about where this currently falls short:
+
+- **Automatic detection produces upright rectangles only.** It does not yet find the *angle* of a crooked photo. If your photos sit askew on the page, auto-detect will box them upright and you'll want to drag the corners yourself. Real rotated-quad detection is the top roadmap item.
+- **Correction is bilinear, not projective.** For a photo rotated flat on a scanner bed, that's exact. For a page photographed at a steep angle, the interior of the crop will be subtly wrong. A proper homography is in progress.
+- **The photo library is capped by `localStorage`.** A 4×6″ print at 300 dpi serializes to roughly 6 MB, and the browser gives an origin about 5 MB total — so large scans will not persist across a reload. The app now says so plainly when it happens instead of failing silently, but **export anything you care about before closing the tab.** Moving to IndexedDB/OPFS is the fix and it is queued.
+- **Big sheets can freeze the tab.** Detection and cropping run on the main thread. A 50-megapixel flatbed scan with eight photos on it will hurt. Web Worker offload is planned.
+- **Export is PNG only.** The format and quality controls in Settings are not yet wired up.
+- **JPEG, PNG and WebP only.** Browsers can't decode TIFF or HEIC in an `<img>`; convert those first. Cropalot now tells you instead of doing nothing.
+
+---
+
+## 🛠️ Tech stack
+
+- **React 19 + TypeScript**, built with **Vite 6**
+- **Tailwind CSS v4**, **Lucide** icons
+- **Canvas 2D** for all image analysis and rendering — plain JavaScript, no WASM, no native deps
+- **JSZip** + **FileSaver.js** for batch export
+
+No backend, no API keys, no analytics, no cookies, no telemetry, no fonts or scripts from a CDN. The dependency list above is the whole of it.
+
+---
+
+## 🚀 Getting started
+
+```bash
+git clone https://github.com/TechLuddite/Cropalot
+cd Cropalot
+npm install
+npm run dev      # http://localhost:3000
+```
+
+| Script | Purpose |
+|---|---|
+| `npm run dev` | Vite dev server on port 3000 |
+| `npm run build` | Production build into `dist/` |
+| `npm run preview` | Serve the production build locally |
+| `npm run lint` | TypeScript type check (`tsc --noEmit`) |
+
+> The dev server relaxes `connect-src` so hot-reload's WebSocket works — see the `devCspRelax` plugin in `vite.config.ts`. It is scoped to `apply: 'serve'` and never runs during a build, so production ships the policy exactly as written in `index.html`.
+
+---
+
+## 📂 Project structure
+
+```
+Cropalot/
+├── index.html                      # App shell + the Content-Security-Policy
+├── vite.config.ts                  # Build config, dev CSP relaxation, commit-SHA injection
+├── metadata.json                   # Applet manifest
+└── src/
+    ├── main.tsx                    # Entry point
+    ├── App.tsx                     # Top-level state & tab routing
+    ├── types.ts                    # Shared TypeScript types
+    ├── utils/
+    │   ├── cvEngine.ts             # Detection, quad ordering, crop & straighten
+    │   ├── imageProcessing.ts      # Filters, presets, rotation, ZIP export
+    │   └── sampleSheets.ts         # Generated demo album pages
+    └── components/
+        ├── Navbar.tsx              # Top & bottom navigation
+        ├── SheetUploader.tsx       # Drop zone, sample picker, upload errors
+        ├── DetectionEditor.tsx     # Interactive corner editor + magnifier
+        ├── GalleryView.tsx         # Extracted photo library & batch export
+        ├── PhotoEnhancerModal.tsx  # Per-photo filter studio
+        ├── CameraModal.tsx         # Webcam / phone capture
+        ├── SettingsModal.tsx       # Preferences
+        ├── OfflinePrivacyModal.tsx # Privacy architecture & self-verification
+        ├── BuildProvenance.tsx     # Commit SHA + how to verify this build
+        ├── SupportModal.tsx        # Credits & donation
+        └── AndroidFrame.tsx        # Phone-preview chrome
 ```
 
 ---
 
-## 💖 Support Development & Acknowledgments
+## 💖 Support & acknowledgments
 
-Cropalot is **100% free software** with no subscriptions, ads, or paywalls.
+Cropalot is free software — no ads, no subscriptions, no paywalls.
 
-If Cropalot helped you digitize family photo albums or save hours of manual cropping, consider supporting ongoing development:
+👉 **[Support development via PayPal](https://www.paypal.com/donate/?hosted_button_id=JLAGXTV4FX96S)**
 
-👉 **[Support Development via PayPal](https.www.paypal.com/donate/?hosted_button_id=JLAGXTV4FX96S)**
-
-### 🏢 Special Thanks & Shout-Out
-
-Special thanks to **[Halo MSP](https://halomsp.com)** — helping businesses with safe and sensible AI and software implementation.
-
-For general business IT needs, check out our parent company **[Tech 2U](https://tech2u.com)** for assistance with any IT requirement.
+Special thanks to **[Halo MSP](https://halomsp.com)** — helping businesses with safe and sensible AI and software implementation. For general business IT, see our parent company **[Tech 2U](https://tech2u.com)**.
 
 ---
 
 ## 📜 License
 
-Distributed under the MIT License. See `LICENSE` for more details.
+MIT — see [LICENSE](./LICENSE).

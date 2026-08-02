@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Upload, Camera, Sparkles, Shield, Lock, Cpu, HardDrive, CheckCircle2, ArrowRight, Heart } from 'lucide-react';
+import { Upload, Camera, Sparkles, Shield, Lock, Cpu, HardDrive, ArrowRight, Heart, AlertTriangle, X } from 'lucide-react';
 import { ScanSheet } from '../types';
 import { generateSampleSheets } from '../utils/sampleSheets';
 
@@ -14,13 +14,17 @@ export const SheetUploader: React.FC<SheetUploaderProps> = ({ onSheetSelected, o
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isHovered, setIsHovered] = useState(false);
   const [loadingSample, setLoadingSample] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Handle custom file upload
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setLoadError(null);
+
     const reader = new FileReader();
+    reader.onerror = () => setLoadError(`Could not read "${file.name}".`);
     reader.onload = (event) => {
       const dataUrl = event.target?.result as string;
       const img = new Image();
@@ -36,6 +40,17 @@ export const SheetUploader: React.FC<SheetUploaderProps> = ({ onSheetSelected, o
         };
         onSheetSelected(newSheet);
       };
+      // Browsers cannot decode every format a scanner emits - TIFF and HEIC in
+      // particular fail here. Without this handler the app simply did nothing
+      // and left the user staring at an unchanged screen.
+      img.onerror = () => {
+        const ext = file.name.match(/\.([^.]+)$/)?.[1]?.toUpperCase();
+        setLoadError(
+          ext && /^(TIF|TIFF|HEIC|HEIF)$/.test(ext)
+            ? `Your browser cannot open ${ext} files. Convert the scan to JPEG, PNG or WebP and try again.`
+            : `Could not decode "${file.name}". Try a JPEG, PNG or WebP version of this scan.`
+        );
+      };
       img.src = dataUrl;
     };
     reader.readAsDataURL(file);
@@ -44,6 +59,7 @@ export const SheetUploader: React.FC<SheetUploaderProps> = ({ onSheetSelected, o
   // Handle sample load
   const loadSample = async (index: number) => {
     setLoadingSample(true);
+    setLoadError(null);
     try {
       const samples = await generateSampleSheets();
       if (samples[index]) {
@@ -51,6 +67,7 @@ export const SheetUploader: React.FC<SheetUploaderProps> = ({ onSheetSelected, o
       }
     } catch (err) {
       console.error('Failed to load sample sheet', err);
+      setLoadError('Could not generate the sample sheet.');
     } finally {
       setLoadingSample(false);
     }
@@ -124,7 +141,7 @@ export const SheetUploader: React.FC<SheetUploaderProps> = ({ onSheetSelected, o
               Drop photo sheet scan or click to browse
             </h3>
             <p className="text-xs text-slate-400 mt-1">
-              Supports JPG, PNG, WEBP, TIFF scanned pages (any resolution)
+              Supports JPEG, PNG and WebP scanned pages (any resolution)
             </p>
           </div>
 
@@ -147,6 +164,24 @@ export const SheetUploader: React.FC<SheetUploaderProps> = ({ onSheetSelected, o
           </div>
         </div>
       </div>
+
+      {/* Upload failure notice */}
+      {loadError && (
+        <div
+          role="alert"
+          className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/40 flex items-start gap-2.5 text-xs text-rose-100"
+        >
+          <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+          <p className="flex-1 leading-relaxed">{loadError}</p>
+          <button
+            onClick={() => setLoadError(null)}
+            className="p-1 rounded-lg text-rose-300/70 hover:text-rose-200 hover:bg-rose-500/10 shrink-0"
+            title="Dismiss"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Preloaded Sample Sheets for Quick Testing */}
       <div className="space-y-4">

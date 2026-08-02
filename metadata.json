@@ -1,8 +1,6 @@
 {
   "name": "Cropalot",
-  "description": "Privacy-first offline multi-photo auto-crop \u0026 deskew tool for family photo sheets with local processing.",
+  "description": "Privacy-first offline multi-photo auto-crop & deskew tool for family photo sheets with local processing.",
   "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
+  "majorCapabilities": []
 }
