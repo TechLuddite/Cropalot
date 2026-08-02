@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import { AlertTriangle, X } from 'lucide-react';
 import { NavbarTop, NavbarBottom } from './components/Navbar';
 import { SheetUploader } from './components/SheetUploader';
 import { DetectionEditor } from './components/DetectionEditor';
@@ -25,6 +26,8 @@ export default function App() {
   const [currentSheet, setCurrentSheet] = useState<ScanSheet | null>(null);
   const [extractedPhotos, setExtractedPhotos] = useState<ExtractedPhoto[]>([]);
   const [isAndroidView, setIsAndroidView] = useState<boolean>(false);
+
+  const [storageError, setStorageError] = useState<string | null>(null);
 
   const [isCameraOpen, setIsCameraOpen] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
@@ -57,14 +60,38 @@ export default function App() {
     }
   }, []);
 
+  /**
+   * Persists the photo library to localStorage, reporting failure to the user
+   * instead of swallowing it.
+   *
+   * localStorage caps an origin at roughly 5 MB. A single 4x6" print scanned at
+   * 300 dpi serialises to a ~6 MB PNG data URL, and every photo is stored twice
+   * (the raw crop plus the enhanced render) - so the very first real scan
+   * exceeds the budget. Previously that threw, got logged to the console, and
+   * left the user believing a library that would vanish on reload had been
+   * saved. Until the storage layer moves to IndexedDB/OPFS Blobs, at least say
+   * so out loud.
+   */
+  const persistPhotos = (photos: ExtractedPhoto[]) => {
+    try {
+      localStorage.setItem(STORAGE_KEY_PHOTOS, JSON.stringify(photos));
+      setStorageError(null);
+    } catch {
+      // Drop the stale entry so a reload shows an empty library rather than a
+      // silently out-of-date one.
+      try { localStorage.removeItem(STORAGE_KEY_PHOTOS); } catch { /* nothing left to do */ }
+      setStorageError(
+        photos.length > 0
+          ? 'These photos are too large for browser storage, so they will be lost if you reload or close this tab. Export them before leaving.'
+          : null
+      );
+    }
+  };
+
   // Save extracted photos locally
   const savePhotosLocally = (photos: ExtractedPhoto[]) => {
     setExtractedPhotos(photos);
-    try {
-      localStorage.setItem(STORAGE_KEY_PHOTOS, JSON.stringify(photos));
-    } catch (err) {
-      console.warn('LocalStorage limit reached for photo cache:', err);
-    }
+    persistPhotos(photos);
   };
 
   // Handlers
@@ -87,11 +114,7 @@ export default function App() {
   const handleDeletePhoto = (id: string) => {
     setExtractedPhotos(prev => {
       const newList = prev.filter(p => p.id !== id);
-      try {
-        localStorage.setItem(STORAGE_KEY_PHOTOS, JSON.stringify(newList));
-      } catch (err) {
-        console.warn('LocalStorage limit reached for photo cache:', err);
-      }
+      persistPhotos(newList);
       return newList;
     });
   };
@@ -100,11 +123,7 @@ export default function App() {
     const idSet = new Set(ids);
     setExtractedPhotos(prev => {
       const newList = prev.filter(p => !idSet.has(p.id));
-      try {
-        localStorage.setItem(STORAGE_KEY_PHOTOS, JSON.stringify(newList));
-      } catch (err) {
-        console.warn('LocalStorage limit reached for photo cache:', err);
-      }
+      persistPhotos(newList);
       return newList;
     });
   };
@@ -137,6 +156,27 @@ export default function App() {
         openOfflineModal={() => setIsOfflineModalOpen(true)}
         openSupportModal={() => setIsSupportModalOpen(true)}
       />
+
+      {/* Storage failure notice - never let a save fail silently */}
+      {storageError && (
+        <div
+          role="alert"
+          className="mx-3 mt-3 sm:mx-6 p-3 rounded-xl bg-amber-950/40 border border-amber-500/40 flex items-start gap-2.5 text-xs text-amber-100"
+        >
+          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <p className="flex-1 leading-relaxed">
+            <strong className="font-bold text-amber-300">Not saved to this browser. </strong>
+            {storageError}
+          </p>
+          <button
+            onClick={() => setStorageError(null)}
+            className="p-1 rounded-lg text-amber-300/70 hover:text-amber-200 hover:bg-amber-500/10 shrink-0"
+            title="Dismiss"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Main Tab Screen */}
       <main className="flex-1 overflow-y-auto">

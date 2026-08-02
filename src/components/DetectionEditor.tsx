@@ -1,8 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { PhotoQuad, ScanSheet, Point, ExtractedPhoto } from '../types';
-import { detectPhotoQuads, extractAndDeskewPhoto, orderQuadPoints } from '../utils/cvEngine';
-import { applyPhotoFilters } from '../utils/imageProcessing';
-import { Sparkles, Plus, Trash2, RotateCw, Check, Sliders, RefreshCw, ZoomIn, Eye, ArrowRight } from 'lucide-react';
+import { detectPhotoQuads, extractAndDeskewPhoto } from '../utils/cvEngine';
+import { Plus, Trash2, RotateCw, Check, RefreshCw, ArrowRight, AlertTriangle, X } from 'lucide-react';
+
+/** Reads back the true pixel dimensions of a rendered crop. */
+function measureImage(src: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    const probe = new Image();
+    probe.onload = () => resolve({ width: probe.naturalWidth, height: probe.naturalHeight });
+    probe.onerror = () => resolve({ width: 0, height: 0 });
+    probe.src = src;
+  });
+}
 
 interface DetectionEditorProps {
   sheet: ScanSheet;
@@ -24,9 +33,10 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
   const [draggingPoint, setDraggingPoint] = useState<{ quadId: string; pointIdx: number } | null>(null);
   const [loupePos, setLoupePos] = useState<{ x: number; y: number; normX: number; normY: number } | null>(null);
 
-  const [sensitivity, setSensitivity] = useState<number>(5);
+  const [sensitivity] = useState<number>(5);
   const [isDetecting, setIsDetecting] = useState<boolean>(false);
   const [isExtracting, setIsExtracting] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Auto-detect on mount if no quads exist
   useEffect(() => {
@@ -41,15 +51,27 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
   const runAutoDetection = async () => {
     if (!sheet.dataUrl) return;
     setIsDetecting(true);
+    setError(null);
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = async () => {
-      const detected = await detectPhotoQuads(img, sensitivity, sheet.quads);
-      setQuads(detected);
-      if (detected.length > 0) {
-        setSelectedQuadId(detected[0].id);
+      try {
+        const detected = await detectPhotoQuads(img, sensitivity, sheet.quads);
+        setQuads(detected);
+        if (detected.length > 0) {
+          setSelectedQuadId(detected[0].id);
+        }
+      } catch (err) {
+        console.error('Detection failed', err);
+        setError('Automatic detection failed on this sheet. Use "Add Box" to place crops by hand.');
+      } finally {
+        setIsDetecting(false);
       }
+    };
+    // Without this the spinner span forever on any image the browser cannot decode.
+    img.onerror = () => {
       setIsDetecting(false);
+      setError('This scan could not be opened. Go back and try a JPEG, PNG or WebP version.');
     };
     img.src = sheet.dataUrl;
   };
@@ -242,51 +264,66 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
     );
   };
 
-  // Extract all photos using Perspective Homography & Canvas Engine
+  // Crop each selected region out of the sheet at full source resolution
   const handleExtractAll = async () => {
     if (quads.length === 0 || !sheet.dataUrl) return;
     setIsExtracting(true);
+    setError(null);
 
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = async () => {
-      const extractedList: ExtractedPhoto[] = [];
+      try {
+        const extractedList: ExtractedPhoto[] = [];
 
-      for (let i = 0; i < quads.length; i++) {
-        const q = quads[i];
-        // Crop & Deskew via computer vision engine
-        const croppedUrl = extractAndDeskewPhoto(img, q);
+        for (let i = 0; i < quads.length; i++) {
+          const q = quads[i];
+          const croppedUrl = extractAndDeskewPhoto(img, q);
 
-        const defaultFilters = {
-          brightness: 0,
-          contrast: 10,
-          saturation: 5,
-          warmth: 0,
-          sharpen: 20,
-          trimMargin: 2,
-          preset: 'autofix' as const
-        };
+          // These crops are family archives. Ship the pixels as cropped and let
+          // the user opt into corrections in the enhancer, rather than baking an
+          // auto-contrast stretch and a sharpen pass into the only copy they
+          // ever get to export.
+          const defaultFilters = {
+            brightness: 0,
+            contrast: 0,
+            saturation: 0,
+            warmth: 0,
+            sharpen: 0,
+            trimMargin: 0,
+            preset: 'none' as const
+          };
 
-        const enhancedUrl = await applyPhotoFilters(croppedUrl, defaultFilters);
+          // Measure what was actually produced instead of asserting 800x600.
+          const dims = await measureImage(croppedUrl);
 
-        extractedList.push({
-          id: `photo_${Date.now()}_${i}`,
-          sheetId: sheet.id,
-          title: q.label || `${sheet.name}_Photo_${i + 1}`,
-          tags: ['Family', 'Scan'],
-          quad: q,
-          originalCropUrl: croppedUrl,
-          enhancedUrl: enhancedUrl,
-          width: 800,
-          height: 600,
-          rotation: 0,
-          filters: defaultFilters,
-          createdAt: Date.now()
-        });
+          extractedList.push({
+            id: `photo_${Date.now()}_${i}`,
+            sheetId: sheet.id,
+            title: q.label || `${sheet.name}_Photo_${i + 1}`,
+            tags: ['Family', 'Scan'],
+            quad: q,
+            originalCropUrl: croppedUrl,
+            enhancedUrl: croppedUrl,
+            width: dims.width,
+            height: dims.height,
+            rotation: 0,
+            filters: defaultFilters,
+            createdAt: Date.now()
+          });
+        }
+
+        onPhotosExtracted(extractedList);
+      } catch (err) {
+        console.error('Extraction failed', err);
+        setError('Extraction failed. The sheet may be too large for this device to process at once.');
+      } finally {
+        setIsExtracting(false);
       }
-
+    };
+    img.onerror = () => {
       setIsExtracting(false);
-      onPhotosExtracted(extractedList);
+      setError('This scan could not be opened for extraction.');
     };
     img.src = sheet.dataUrl;
   };
@@ -345,6 +382,24 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Detection / extraction failure notice */}
+      {error && (
+        <div
+          role="alert"
+          className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/40 flex items-start gap-2.5 text-xs text-rose-100"
+        >
+          <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+          <p className="flex-1 leading-relaxed">{error}</p>
+          <button
+            onClick={() => setError(null)}
+            className="p-1 rounded-lg text-rose-300/70 hover:text-rose-200 hover:bg-rose-500/10 shrink-0"
+            title="Dismiss"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Main Interactive Canvas Container */}
       <div

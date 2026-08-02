@@ -3,6 +3,38 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!--
+      PRIVACY IS ENFORCED HERE, NOT PROMISED IN PROSE.
+
+      `connect-src 'none'` instructs your browser to block every outbound
+      fetch, XMLHttpRequest, WebSocket, EventSource and sendBeacon this page
+      could ever attempt. It is not a policy we follow voluntarily - the
+      browser refuses the request before any code of ours runs.
+
+      That means your photos cannot be uploaded anywhere, by us or by anyone
+      who later modifies this app, without changing this line first. You can
+      verify the entire guarantee by reading it, rather than by auditing every
+      line of JavaScript we ship.
+
+      The Vite dev server relaxes `connect-src` locally so hot-reload works
+      (see the `devCspRelax` plugin in vite.config.ts). Production builds ship
+      this policy byte-for-byte as written below.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self';
+               connect-src 'none';
+               img-src 'self' blob: data:;
+               media-src 'self' blob:;
+               script-src 'self';
+               style-src 'self' 'unsafe-inline';
+               worker-src 'self' blob:;
+               object-src 'none';
+               form-action 'none';
+               base-uri 'none'"
+    />
+
     <title>Cropalot - Privacy-First Multi-Photo Auto-Crop &amp; Deskew</title>
   </head>
   <body>
@@ -10,4 +42,3 @@
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

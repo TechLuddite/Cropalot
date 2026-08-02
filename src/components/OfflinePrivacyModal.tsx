@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { ShieldCheck, WifiOff, HardDrive, Lock, Cpu, CheckCircle2, X, Terminal, Heart, ExternalLink, GitBranch } from 'lucide-react';
-import { RepoDriftChecker } from './RepoDriftChecker';
+import { ShieldCheck, WifiOff, HardDrive, Lock, Cpu, CheckCircle2, X, Terminal, Heart, GitBranch } from 'lucide-react';
+import { BuildProvenance } from './BuildProvenance';
 
 interface OfflinePrivacyModalProps {
   isOpen: boolean;
@@ -8,10 +8,8 @@ interface OfflinePrivacyModalProps {
   openSupportModal?: () => void;
 }
 
-const PAYPAL_DONATE_URL = 'https://www.paypal.com/donate/?hosted_button_id=JLAGXTV4FX96S';
-
 export const OfflinePrivacyModal: React.FC<OfflinePrivacyModalProps> = ({ isOpen, onClose, openSupportModal }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'technical' | 'verify' | 'drift'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'technical' | 'verify' | 'build'>('overview');
 
   if (!isOpen) return null;
 
@@ -84,15 +82,15 @@ export const OfflinePrivacyModal: React.FC<OfflinePrivacyModalProps> = ({ isOpen
             <span>How To Self-Verify</span>
           </button>
           <button
-            onClick={() => setActiveTab('drift')}
+            onClick={() => setActiveTab('build')}
             className={`pb-3 px-3 border-b-2 transition-all flex items-center gap-1.5 ${
-              activeTab === 'drift'
+              activeTab === 'build'
                 ? 'border-cyan-400 text-cyan-400 font-bold'
                 : 'border-transparent text-slate-400 hover:text-slate-200'
             }`}
           >
             <GitBranch className="w-3.5 h-3.5" />
-            <span>Repo Drift</span>
+            <span>This Build</span>
           </button>
         </div>
 
@@ -146,10 +144,10 @@ export const OfflinePrivacyModal: React.FC<OfflinePrivacyModalProps> = ({ isOpen
                 <div className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-1.5">
                   <div className="flex items-center gap-2 text-white font-bold text-xs">
                     <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                    <span>Airplane Mode Ready</span>
+                    <span>Works Disconnected</span>
                   </div>
                   <p className="text-xs text-slate-400 leading-relaxed">
-                    You can disconnect your internet connection entirely right now, and Cropalot will continue to scan, crop, deskew, and export ZIP files without interruption.
+                    Once this page has loaded you can disconnect entirely and keep scanning, cropping, and exporting. Reloading the tab still needs a connection to fetch the app again &mdash; offline install is on the roadmap.
                   </p>
                 </div>
               </div>
@@ -196,7 +194,7 @@ export const OfflinePrivacyModal: React.FC<OfflinePrivacyModalProps> = ({ isOpen
                   <div className="space-y-1">
                     <h4 className="font-bold text-white text-xs">In-Browser Computer Vision (Canvas 2D)</h4>
                     <p className="text-xs text-slate-400 leading-relaxed">
-                      Auto-cropping uses a custom lightweight Javascript computer vision engine (<code className="text-emerald-300">cvEngine.ts</code>) that analyzes canvas pixel arrays locally to detect photo bounds, calculate geometric quadrilaterals, and estimate deskew angles.
+                      Auto-cropping uses a small plain-JavaScript engine (<code className="text-emerald-300">cvEngine.ts</code>) that reads canvas pixel arrays locally to estimate the page background, group foreground regions, and place a bounding box around each photo it finds.
                     </p>
                   </div>
                 </div>
@@ -206,9 +204,9 @@ export const OfflinePrivacyModal: React.FC<OfflinePrivacyModalProps> = ({ isOpen
                     <HardDrive className="w-4 h-4" />
                   </div>
                   <div className="space-y-1">
-                    <h4 className="font-bold text-white text-xs">Local Homography Perspective Transformation</h4>
+                    <h4 className="font-bold text-white text-xs">Local Quadrilateral Rectification</h4>
                     <p className="text-xs text-slate-400 leading-relaxed">
-                      Perspective correction calculates an 8-parameter perspective projection matrix directly on standard HTML5 canvas elements, mapping arbitrary 4-corner polygons into rectified rectangular images.
+                      Cropping maps your 4-corner selection back to a rectangle on a standard HTML5 canvas, straightening photos that sit crooked on the page. Correction is currently bilinear, which is exact for rotated flatbed scans; full perspective correction for steeply angled phone shots is in progress.
                     </p>
                   </div>
                 </div>
@@ -265,7 +263,7 @@ export const OfflinePrivacyModal: React.FC<OfflinePrivacyModalProps> = ({ isOpen
             </div>
           )}
 
-          {activeTab === 'drift' && <RepoDriftChecker />}
+          {activeTab === 'build' && <BuildProvenance />}
         </div>
 
         {/* Modal Footer */}
