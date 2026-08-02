@@ -66,47 +66,45 @@ function estimateBackground(pixels: Uint8ClampedArray, w: number, h: number): [n
 }
 
 /**
- * Morphological closing (dilate then erode) on the coarse occupancy grid.
+ * Fills isolated background cells that are almost entirely surrounded by
+ * foreground, smoothing speckle out of the mask.
  *
- * Photos have interior detail that reads as background in places - a bright sky
- * on a white scanner bed, for instance - so the raw mask is full of holes.
- * Closing fills them. The earlier code dilated without eroding, which fixed the
- * holes but also grew every region outward by one cell in each direction, so
- * two photos sitting closer than ~2.5% of the sheet width fused into a single
- * box. Eroding afterwards restores the original extent.
+ * Deliberately *not* a morphological closing. Closing dilates before eroding,
+ * and dilation bridges any gap narrower than its kernel - which merges photos
+ * sitting close together on a page, the single most common album layout, and
+ * once the bridge exists erosion cannot separate them again. Requiring a strong
+ * majority of foreground neighbours removes noise without ever growing a region
+ * into its neighbour: a cell in the corridor between two photos has foreground
+ * on two sides at most, so it is left alone.
+ *
+ * Interior detail matching the page colour is handled by fillHoles below, which
+ * is exact rather than kernel-limited.
  */
-function closeGrid(grid: Uint8Array, cols: number, rows: number): Uint8Array {
-  const dilated = new Uint8Array(cols * rows);
-  const closed = new Uint8Array(cols * rows);
+function despeckle(grid: Uint8Array, cols: number, rows: number): Uint8Array {
+  const out = new Uint8Array(grid);
 
-  const neighbourhood = (src: Uint8Array, gx: number, gy: number, want: number): boolean => {
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        const nx = gx + dx;
-        const ny = gy + dy;
-        if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) {
-          // Treat outside the sheet as background.
-          if (want === 0) return true;
-          continue;
+  for (let gy = 0; gy < rows; gy++) {
+    for (let gx = 0; gx < cols; gx++) {
+      const idx = gy * cols + gx;
+      if (grid[idx] === 1) continue;
+
+      let foreground = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = gx + dx;
+          const ny = gy + dy;
+          if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue;
+          if (grid[ny * cols + nx] === 1) foreground++;
         }
-        if (src[ny * cols + nx] === want) return true;
       }
-    }
-    return false;
-  };
 
-  for (let gy = 0; gy < rows; gy++) {
-    for (let gx = 0; gx < cols; gx++) {
-      dilated[gy * cols + gx] = neighbourhood(grid, gx, gy, 1) ? 1 : 0;
-    }
-  }
-  for (let gy = 0; gy < rows; gy++) {
-    for (let gx = 0; gx < cols; gx++) {
-      closed[gy * cols + gx] = dilated[gy * cols + gx] === 1 && !neighbourhood(dilated, gx, gy, 0) ? 1 : 0;
+      // 7 of 8 means this is a pinhole, not part of a corridor between photos.
+      if (foreground >= 7) out[idx] = 1;
     }
   }
 
-  return closed;
+  return out;
 }
 
 /**
@@ -160,15 +158,15 @@ function fillHoles(grid: Uint8Array, cols: number, rows: number): Uint8Array {
   return filled;
 }
 
-interface Blob {
+interface Region {
   cells: number[];
   minGX: number; maxGX: number; minGY: number; maxGY: number;
 }
 
 /** Groups active grid cells into 4-connected regions. */
-function findBlobs(grid: Uint8Array, cols: number, rows: number): Blob[] {
+function findBlobs(grid: Uint8Array, cols: number, rows: number): Region[] {
   const visited = new Uint8Array(cols * rows);
-  const blobs: Blob[] = [];
+  const blobs: Region[] = [];
 
   for (let gy = 0; gy < rows; gy++) {
     for (let gx = 0; gx < cols; gx++) {
@@ -281,8 +279,8 @@ export async function detectPhotoQuads(
     }
   }
 
-  const closed = fillHoles(closeGrid(occupancy, GRID, GRID), GRID, GRID);
-  const blobs = findBlobs(closed, GRID, GRID);
+  const mask = fillHoles(despeckle(occupancy, GRID, GRID), GRID, GRID);
+  const blobs = findBlobs(mask, GRID, GRID);
 
   // --- Stage 2: refine each blob into an oriented rectangle ----------------
   const minCells = Math.max(9, Math.floor(GRID * GRID * 0.004));
@@ -431,7 +429,7 @@ export function extractAndDeskewPhoto(
   quad: PhotoQuad,
   targetWidth?: number,
   targetHeight?: number
-): string {
+): HTMLCanvasElement | null {
   const { data: src, width: srcW, height: srcH } = sheet;
 
   const ordered = orderQuadPoints(quad.points.map(p => ({ x: p.x * srcW, y: p.y * srcH })));
@@ -448,14 +446,14 @@ export function extractAndDeskewPhoto(
   dest.width = outW;
   dest.height = outH;
   const destCtx = dest.getContext('2d');
-  if (!destCtx) return '';
+  if (!destCtx) return null;
 
   // Homography from destination rectangle -> source quad, i.e. the inverse map.
   const h = solveHomography(
     [{ x: 0, y: 0 }, { x: outW, y: 0 }, { x: outW, y: outH }, { x: 0, y: outH }],
     [p0, p1, p2, p3]
   );
-  if (!h) return '';
+  if (!h) return null;
 
   // When the source region is much larger than the output, point sampling
   // aliases badly. Average a small grid of samples per output pixel instead.
@@ -518,5 +516,26 @@ export function extractAndDeskewPhoto(
   }
 
   destCtx.putImageData(out, 0, 0);
-  return dest.toDataURL('image/png');
+  return dest;
+}
+
+/**
+ * Encodes a canvas to a Blob.
+ *
+ * Crops are handed around as Blobs rather than data URLs: base64 inflates the
+ * payload by a third, and every conversion allocates the whole thing again as a
+ * JavaScript string.
+ */
+export function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  type = 'image/png',
+  quality?: number
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      blob => (blob ? resolve(blob) : reject(new Error('encoding failed'))),
+      type,
+      quality
+    );
+  });
 }

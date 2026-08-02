@@ -1,15 +1,20 @@
-import React, { useState, useEffect } from 'react';
-import { ExtractedPhoto, FilterSettings } from '../types';
-import { applyPhotoFilters } from '../utils/imageProcessing';
+import React, { useState, useEffect, useRef } from 'react';
+import { FilterSettings } from '../types';
+import { PhotoRecord } from '../utils/photoStore';
+import { renderPhoto, renderThumb, THUMB_MAX_DIM } from '../utils/imageProcessing';
 import {
-  X, RotateCcw, RotateCw, Sparkles, Sliders, Check, Download, Image as ImageIcon, SlidersHorizontal, Sun, Contrast as ContrastIcon, Palette, Flame, Scissors
+  X, RotateCcw, RotateCw, Sparkles, Sliders, Check, SlidersHorizontal, Sun,
+  Contrast as ContrastIcon, Palette, Flame, Scissors, CalendarDays
 } from 'lucide-react';
 
 interface PhotoEnhancerModalProps {
-  photo: ExtractedPhoto;
-  onSave: (updatedPhoto: ExtractedPhoto) => void;
+  photo: PhotoRecord;
+  onSave: (updatedPhoto: PhotoRecord) => void;
   onClose: () => void;
 }
+
+/** Preview at thumbnail scale: fast enough to keep up with a dragged slider. */
+const PREVIEW_MAX_DIM = THUMB_MAX_DIM * 2;
 
 export const PhotoEnhancerModal: React.FC<PhotoEnhancerModalProps> = ({
   photo,
@@ -18,51 +23,112 @@ export const PhotoEnhancerModal: React.FC<PhotoEnhancerModalProps> = ({
 }) => {
   const [filters, setFilters] = useState<FilterSettings>(photo.filters);
   const [rotation, setRotation] = useState<number>(photo.rotation || 0);
-  const [previewUrl, setPreviewUrl] = useState<string>(photo.enhancedUrl);
   const [title, setTitle] = useState<string>(photo.title);
+  const [captureDate, setCaptureDate] = useState<string>(photo.captureDate ?? '');
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [originalUrl, setOriginalUrl] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [isSaving, setIsSaving] = useState<boolean>(false);
   const [showComparison, setShowComparison] = useState<boolean>(false);
 
-  // Update preview when filters or rotation change
+  const previewUrlRef = useRef<string | null>(null);
+
+  // The untouched crop, shown in the comparison pane.
   useEffect(() => {
-    let active = true;
-    const update = async () => {
-      setIsProcessing(true);
-      const url = await applyPhotoFilters(photo.originalCropUrl, filters, rotation);
-      if (active) {
+    const url = URL.createObjectURL(photo.original);
+    setOriginalUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [photo.original]);
+
+  // Re-render the preview whenever the controls move. Renders are debounced and
+  // superseded, so dragging a slider does not queue up a full-resolution render
+  // per pixel of travel.
+  useEffect(() => {
+    let cancelled = false;
+    setIsProcessing(true);
+
+    const timer = setTimeout(async () => {
+      try {
+        const blob = await renderPhoto(photo.original, {
+          filters,
+          rotation,
+          maxDim: PREVIEW_MAX_DIM,
+          format: 'webp',
+          quality: 0.9
+        });
+        if (cancelled) return;
+
+        const url = URL.createObjectURL(blob);
+        if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+        previewUrlRef.current = url;
         setPreviewUrl(url);
-        setIsProcessing(false);
+      } catch (err) {
+        console.error('Preview render failed', err);
+      } finally {
+        if (!cancelled) setIsProcessing(false);
       }
+    }, 120);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
     };
-    update();
-    return () => { active = false; };
-  }, [filters, rotation, photo.originalCropUrl]);
+  }, [filters, rotation, photo.original]);
+
+  useEffect(() => () => {
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+  }, []);
+
+  // Escape closes, and focus is trapped inside the dialog while it is open.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   const handleApplyPreset = (preset: FilterSettings['preset']) => {
-    setFilters(prev => ({
-      ...prev,
-      preset,
-      brightness: preset === 'autofix' ? 0 : prev.brightness,
-      contrast: preset === 'autofix' ? 15 : prev.contrast
-    }));
+    setFilters(prev => ({ ...prev, preset }));
   };
 
-  const handleSave = () => {
-    onSave({
-      ...photo,
-      title,
-      filters,
-      rotation,
-      enhancedUrl: previewUrl
+  const handleReset = () => {
+    setFilters({
+      brightness: 0, contrast: 0, saturation: 0, warmth: 0,
+      sharpen: 0, trimMargin: 0, preset: 'none'
     });
-    onClose();
+    setRotation(0);
   };
 
-  const handleDownloadSingle = () => {
-    const a = document.createElement('a');
-    a.href = previewUrl;
-    a.download = `${title.replace(/[^a-zA-Z0-9_-]/g, '_')}.png`;
-    a.click();
+  /**
+   * Persists the settings, not the pixels.
+   *
+   * Only the small thumbnail is re-rendered; full-size output is produced from
+   * the preserved original at export time. Every edit therefore stays
+   * reversible and the library holds one copy of each photo.
+   */
+  const handleSave = async () => {
+    setIsSaving(true);
+    try {
+      const thumb = await renderThumb(photo.original, filters, rotation);
+      const quarterTurns = ((Math.round(rotation / 90) % 4) + 4) % 4;
+      const swaps = quarterTurns % 2 === 1;
+
+      onSave({
+        ...photo,
+        title,
+        captureDate: captureDate.trim() || undefined,
+        filters,
+        rotation,
+        width: swaps ? photo.height : photo.width,
+        height: swaps ? photo.width : photo.height,
+        thumb
+      });
+      onClose();
+    } catch (err) {
+      console.error('Could not save changes', err);
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -114,7 +180,7 @@ export const PhotoEnhancerModal: React.FC<PhotoEnhancerModalProps> = ({
                 <div className="space-y-2 text-center">
                   <span className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Raw Deskewed</span>
                   <img
-                    src={photo.originalCropUrl}
+                    src={originalUrl ?? undefined}
                     alt="Original"
                     className="max-h-[300px] object-contain rounded-xl border border-slate-800 mx-auto"
                   />
@@ -122,7 +188,7 @@ export const PhotoEnhancerModal: React.FC<PhotoEnhancerModalProps> = ({
                 <div className="space-y-2 text-center">
                   <span className="text-xs text-emerald-400 font-semibold uppercase tracking-wider">Restored</span>
                   <img
-                    src={previewUrl}
+                    src={previewUrl ?? undefined}
                     alt="Enhanced"
                     className="max-h-[300px] object-contain rounded-xl border border-emerald-500/40 shadow-xl mx-auto"
                   />
@@ -131,7 +197,7 @@ export const PhotoEnhancerModal: React.FC<PhotoEnhancerModalProps> = ({
             ) : (
               <div className="relative max-h-[380px] flex items-center justify-center">
                 <img
-                  src={previewUrl}
+                  src={previewUrl ?? undefined}
                   alt="Preview"
                   className="max-h-[360px] object-contain rounded-xl border border-slate-800 shadow-2xl"
                 />
@@ -193,6 +259,27 @@ export const PhotoEnhancerModal: React.FC<PhotoEnhancerModalProps> = ({
                   </button>
                 ))}
               </div>
+            </div>
+
+            {/* Capture date -> EXIF DateTimeOriginal on JPEG export.
+                Without this every digitised photo imports under today's date,
+                which is most of the reason people give up on scanning albums. */}
+            <div className="space-y-2 pt-2 border-t border-slate-800">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                <CalendarDays className="w-3.5 h-3.5 text-emerald-400" /> When was it taken?
+              </h4>
+              <input
+                type="text"
+                value={captureDate}
+                onChange={(e) => setCaptureDate(e.target.value)}
+                placeholder="1974, 1974-08 or 1974-08-23"
+                aria-label="Capture date"
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 font-mono"
+              />
+              <p className="text-[10px] text-slate-500 leading-relaxed">
+                Written into the file as the EXIF capture date when you export JPEG, so photo apps
+                file it under the right year instead of today.
+              </p>
             </div>
 
             {/* Fine-Tuning Sliders */}
@@ -295,13 +382,13 @@ export const PhotoEnhancerModal: React.FC<PhotoEnhancerModalProps> = ({
         </div>
 
         {/* Modal Footer */}
-        <div className="p-4 bg-slate-950/80 border-t border-slate-800 flex items-center justify-between">
+        <div className="p-4 bg-slate-950/80 border-t border-slate-800 flex items-center justify-between gap-3">
           <button
-            onClick={handleDownloadSingle}
+            onClick={handleReset}
             className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2 transition-colors border border-slate-700"
           >
-            <Download className="w-4 h-4 text-emerald-400" />
-            <span>Download PNG</span>
+            <RotateCcw className="w-4 h-4 text-emerald-400" />
+            <span>Reset to original</span>
           </button>
 
           <div className="flex items-center gap-2">
@@ -313,10 +400,11 @@ export const PhotoEnhancerModal: React.FC<PhotoEnhancerModalProps> = ({
             </button>
             <button
               onClick={handleSave}
-              className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs md:text-sm flex items-center gap-2 transition-all shadow-lg shadow-emerald-500/20"
+              disabled={isSaving}
+              className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs md:text-sm flex items-center gap-2 transition-all shadow-lg shadow-emerald-500/20 disabled:opacity-60"
             >
               <Check className="w-4 h-4" />
-              <span>Save Changes</span>
+              <span>{isSaving ? 'Saving...' : 'Save Changes'}</span>
             </button>
           </div>
         </div>

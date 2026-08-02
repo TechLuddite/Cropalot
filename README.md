@@ -49,9 +49,11 @@ Or just open DevTools → Network and crop a sheet. Nothing goes out. If anythin
 - **True perspective correction** — solves the homography mapping your quadrilateral to a rectangle and inverse-maps every output pixel through it, with bilinear sampling and supersampling on downscale.
 - **Detection sensitivity** — a slider for low-contrast pages, and a per-photo readout of the tilt found and how completely the photo fills its own box.
 - **Manual 4-corner adjustment** — drag any corner, with a 3× magnifier for precision. Corners are re-ordered on release, so a corner dragged past its neighbour can't silently produce a broken crop.
-- **Non-destructive editing** — extraction gives you the pixels as cropped. Colour and tone corrections are opt-in in the enhancer and are applied on top of a preserved original.
-- **Enhancement presets** — auto-fix, vintage restore, B&W, sepia, vivid, plus brightness / contrast / saturation / warmth / sharpen / edge-trim sliders.
-- **Batch ZIP export** — download every crop in one archive.
+- **Non-destructive by construction** — the crop is stored once, untouched, and every preview and export is rendered from it on demand. Filters are saved as settings, not baked into pixels, so any edit is reversible forever.
+- **Enhancement presets** — auto-fix, vintage restore, B&W, sepia, vivid, plus brightness / contrast / saturation / warmth / sharpen / edge-trim sliders, with live preview and a reset.
+- **Capture dates written as EXIF** — tag an album page with the year it's from and exported JPEGs carry `DateTimeOriginal`, so 300 scanned photos file themselves under 1974 in your photo app instead of piling up under today.
+- **Export as JPEG, PNG or WebP** at a quality you choose, either as a ZIP or — on Chromium browsers — written straight into a folder you pick, one file per photo.
+- **A library that actually persists** — photos live in IndexedDB as Blobs, so the quota is a share of free disk rather than the ~5 MB an origin gets in `localStorage`.
 - **Camera capture** — grab a page with a phone or webcam instead of a scanner.
 - **Sample sheets that double as a benchmark** — three generated album pages, each carrying the exact corners of the photos drawn onto it. Detection runs on them for real and the editor shows the resulting mean IoU against those known corners, so accuracy regressions are visible rather than hidden. Currently **0.93–0.99 IoU, all photos found**.
 
@@ -59,9 +61,8 @@ Or just open DevTools → Network and crop a sheet. Nothing goes out. If anythin
 
 Being straight with you about where this currently falls short:
 
-- **The photo library is capped by `localStorage`.** A 4×6″ print at 300 dpi serializes to roughly 6 MB, and the browser gives an origin about 5 MB total — so large scans will not persist across a reload. The app now says so plainly when it happens instead of failing silently, but **export anything you care about before closing the tab.** Moving to IndexedDB/OPFS is the fix and it is queued.
 - **Big sheets can freeze the tab.** Detection and cropping run on the main thread. A 50-megapixel flatbed scan with eight photos on it will hurt. Web Worker offload is planned.
-- **Export is PNG only.** The format and quality controls in Settings are not yet wired up.
+- **No installable offline mode yet.** Once loaded you can work disconnected, but a reload needs the network. Service worker + manifest is the next step.
 - **JPEG, PNG and WebP only.** Browsers can't decode TIFF or HEIC in an `<img>`; convert those first. Cropalot now tells you instead of doing nothing.
 
 ---
@@ -72,7 +73,8 @@ Being straight with you about where this currently falls short:
 - **Tailwind CSS v4**, **Lucide** icons
 - **Canvas 2D** for all image analysis and rendering — plain JavaScript, no WASM, no native deps
 - Convex hull, rotating-calipers minimum-area rectangle, Sutherland–Hodgman clipping and an 8×8 homography solve, all hand-rolled in `src/utils/geometry.ts`
-- **JSZip** + **FileSaver.js** for batch export
+- **IndexedDB** for the photo library (Blobs, not base64), **File System Access API** for folder export where available
+- **JSZip** + **FileSaver.js** for the ZIP fallback
 
 No backend, no API keys, no analytics, no cookies, no telemetry, no fonts or scripts from a CDN. The dependency list above is the whole of it.
 
@@ -112,7 +114,9 @@ Cropalot/
     ├── utils/
     │   ├── geometry.ts             # Hull, min-area rect, polygon clipping, homography solver
     │   ├── cvEngine.ts             # Detection pipeline + homography warp
-    │   ├── imageProcessing.ts      # Filters, presets, rotation, ZIP export
+    │   ├── imageProcessing.ts      # Rendering, filters, ZIP & folder export
+    │   ├── photoStore.ts           # IndexedDB Blob library
+    │   ├── exif.ts                 # EXIF writer for capture dates
     │   └── sampleSheets.ts         # Generated demo album pages
     └── components/
         ├── Navbar.tsx              # Top & bottom navigation

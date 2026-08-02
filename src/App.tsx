@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { AlertTriangle, X } from 'lucide-react';
 import { NavbarTop, NavbarBottom } from './components/Navbar';
 import { SheetUploader } from './components/SheetUploader';
@@ -14,123 +14,132 @@ import { SettingsModal } from './components/SettingsModal';
 import { OfflinePrivacyModal } from './components/OfflinePrivacyModal';
 import { SupportModal } from './components/SupportModal';
 import { AndroidFrame } from './components/AndroidFrame';
-import { ScanSheet, ExtractedPhoto, AppSettings } from './types';
+import { ScanSheet, AppSettings } from './types';
+import {
+  PhotoRecord,
+  getAllPhotos,
+  putPhotos,
+  putPhoto,
+  deletePhotos,
+  clearPhotos,
+  migrateFromLocalStorage,
+  requestPersistence
+} from './utils/photoStore';
 
-const STORAGE_KEY_PHOTOS = 'cropalot_extracted_photos';
 const STORAGE_KEY_SETTINGS = 'cropalot_app_settings';
-const OLD_STORAGE_KEY_PHOTOS = 'splitsnap_extracted_photos';
 const OLD_STORAGE_KEY_SETTINGS = 'splitsnap_app_settings';
+
+const DEFAULT_SETTINGS: AppSettings = {
+  autoDetectOnUpload: true,
+  defaultOutputFormat: 'jpeg',
+  exportQuality: 0.92,
+  autoDeskewSensitivity: 5
+};
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'upload' | 'editor' | 'gallery'>('upload');
   const [currentSheet, setCurrentSheet] = useState<ScanSheet | null>(null);
-  const [extractedPhotos, setExtractedPhotos] = useState<ExtractedPhoto[]>([]);
+  const [photos, setPhotos] = useState<PhotoRecord[]>([]);
+  const [isLoadingLibrary, setIsLoadingLibrary] = useState<boolean>(true);
   const [isAndroidView, setIsAndroidView] = useState<boolean>(false);
-
-  const [storageError, setStorageError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const [isCameraOpen, setIsCameraOpen] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isOfflineModalOpen, setIsOfflineModalOpen] = useState<boolean>(false);
   const [isSupportModalOpen, setIsSupportModalOpen] = useState<boolean>(false);
 
-  const [settings, setSettings] = useState<AppSettings>({
-    autoDetectOnUpload: true,
-    defaultOutputFormat: 'png',
-    jpegQuality: 0.9,
-    autoDeskewSensitivity: 5,
-    defaultTrimMargin: 2,
-    theme: 'dark',
-    isProUnlocked: false
-  });
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
 
-  // Load saved state from LocalStorage
+  // Settings are a handful of scalars, so localStorage remains the right home
+  // for them. Only the photo library moved to IndexedDB.
   useEffect(() => {
     try {
-      const savedPhotos = localStorage.getItem(STORAGE_KEY_PHOTOS) || localStorage.getItem(OLD_STORAGE_KEY_PHOTOS);
-      if (savedPhotos) {
-        setExtractedPhotos(JSON.parse(savedPhotos));
-      }
-      const savedSettings = localStorage.getItem(STORAGE_KEY_SETTINGS) || localStorage.getItem(OLD_STORAGE_KEY_SETTINGS);
-      if (savedSettings) {
-        setSettings(JSON.parse(savedSettings));
+      const saved =
+        localStorage.getItem(STORAGE_KEY_SETTINGS) || localStorage.getItem(OLD_STORAGE_KEY_SETTINGS);
+      if (saved) {
+        setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(saved) });
       }
     } catch (err) {
-      console.error('Failed to load local storage:', err);
+      console.error('Failed to read saved settings:', err);
     }
   }, []);
 
-  /**
-   * Persists the photo library to localStorage, reporting failure to the user
-   * instead of swallowing it.
-   *
-   * localStorage caps an origin at roughly 5 MB. A single 4x6" print scanned at
-   * 300 dpi serialises to a ~6 MB PNG data URL, and every photo is stored twice
-   * (the raw crop plus the enhanced render) - so the very first real scan
-   * exceeds the budget. Previously that threw, got logged to the console, and
-   * left the user believing a library that would vanish on reload had been
-   * saved. Until the storage layer moves to IndexedDB/OPFS Blobs, at least say
-   * so out loud.
-   */
-  const persistPhotos = (photos: ExtractedPhoto[]) => {
-    try {
-      localStorage.setItem(STORAGE_KEY_PHOTOS, JSON.stringify(photos));
-      setStorageError(null);
-    } catch {
-      // Drop the stale entry so a reload shows an empty library rather than a
-      // silently out-of-date one.
-      try { localStorage.removeItem(STORAGE_KEY_PHOTOS); } catch { /* nothing left to do */ }
-      setStorageError(
-        photos.length > 0
-          ? 'These photos are too large for browser storage, so they will be lost if you reload or close this tab. Export them before leaving.'
-          : null
-      );
-    }
-  };
+  // Load the library, draining anything an older build left in localStorage.
+  useEffect(() => {
+    let cancelled = false;
 
-  // Save extracted photos locally
-  const savePhotosLocally = (photos: ExtractedPhoto[]) => {
-    setExtractedPhotos(photos);
-    persistPhotos(photos);
-  };
+    (async () => {
+      try {
+        const migrated = await migrateFromLocalStorage();
+        const all = await getAllPhotos();
+        if (cancelled) return;
+        setPhotos(all);
+        if (migrated > 0) {
+          setNotice(`Recovered ${migrated} photo${migrated === 1 ? '' : 's'} from this browser's older local storage.`);
+        }
+      } catch (err) {
+        console.error('Could not open the photo library:', err);
+        if (!cancelled) {
+          setNotice(
+            'Your browser would not open local storage for the photo library, so photos will not be kept between visits. Private browsing usually causes this. Export anything you want to keep.'
+          );
+        }
+      } finally {
+        if (!cancelled) setIsLoadingLibrary(false);
+      }
+    })();
 
-  // Handlers
+    // Ask the browser not to evict the library under storage pressure.
+    requestPersistence().catch(() => {});
+
+    return () => { cancelled = true; };
+  }, []);
+
   const handleSheetSelected = (sheet: ScanSheet) => {
     setCurrentSheet(sheet);
     setActiveTab('editor');
   };
 
-  const handlePhotosExtracted = (newPhotos: ExtractedPhoto[]) => {
-    const updated = [...newPhotos, ...extractedPhotos];
-    savePhotosLocally(updated);
+  const handlePhotosExtracted = useCallback(async (newPhotos: PhotoRecord[]) => {
+    setPhotos(prev => [...newPhotos, ...prev]);
     setActiveTab('gallery');
-  };
+    try {
+      await putPhotos(newPhotos);
+    } catch (err) {
+      console.error('Could not save extracted photos:', err);
+      setNotice('These photos could not be written to local storage. Export them before closing this tab.');
+    }
+  }, []);
 
-  const handleUpdatePhoto = (updated: ExtractedPhoto) => {
-    const newList = extractedPhotos.map(p => (p.id === updated.id ? updated : p));
-    savePhotosLocally(newList);
-  };
+  const handleUpdatePhoto = useCallback(async (updated: PhotoRecord) => {
+    setPhotos(prev => prev.map(p => (p.id === updated.id ? updated : p)));
+    try {
+      await putPhoto(updated);
+    } catch (err) {
+      console.error('Could not save photo changes:', err);
+      setNotice('That change could not be saved to local storage.');
+    }
+  }, []);
 
-  const handleDeletePhoto = (id: string) => {
-    setExtractedPhotos(prev => {
-      const newList = prev.filter(p => p.id !== id);
-      persistPhotos(newList);
-      return newList;
-    });
-  };
-
-  const handleDeleteBatchPhotos = (ids: string[]) => {
+  const handleDeletePhotos = useCallback(async (ids: string[]) => {
     const idSet = new Set(ids);
-    setExtractedPhotos(prev => {
-      const newList = prev.filter(p => !idSet.has(p.id));
-      persistPhotos(newList);
-      return newList;
-    });
-  };
+    setPhotos(prev => prev.filter(p => !idSet.has(p.id)));
+    try {
+      await deletePhotos(ids);
+    } catch (err) {
+      console.error('Could not delete photos:', err);
+    }
+  }, []);
 
-  const handleClearAll = () => {
-    savePhotosLocally([]);
-  };
+  const handleClearAll = useCallback(async () => {
+    setPhotos([]);
+    try {
+      await clearPhotos();
+    } catch (err) {
+      console.error('Could not clear the library:', err);
+    }
+  }, []);
 
   const handleUpdateSettings = (newSettings: AppSettings) => {
     setSettings(newSettings);
@@ -141,35 +150,30 @@ export default function App() {
     }
   };
 
-  // Main UI Content rendering
   const mainContent = (
     <div className="flex-1 flex flex-col min-h-0 bg-slate-950 text-slate-100 relative">
-      {/* Top Bar Navigation */}
       <NavbarTop
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         isAndroidView={isAndroidView}
         setIsAndroidView={setIsAndroidView}
-        extractedCount={extractedPhotos.length}
+        extractedCount={photos.length}
         openSettings={() => setIsSettingsOpen(true)}
         openCamera={() => setIsCameraOpen(true)}
         openOfflineModal={() => setIsOfflineModalOpen(true)}
         openSupportModal={() => setIsSupportModalOpen(true)}
       />
 
-      {/* Storage failure notice - never let a save fail silently */}
-      {storageError && (
+      {/* Storage and migration notices - never let a save fail silently. */}
+      {notice && (
         <div
           role="alert"
           className="mx-3 mt-3 sm:mx-6 p-3 rounded-xl bg-amber-950/40 border border-amber-500/40 flex items-start gap-2.5 text-xs text-amber-100"
         >
           <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-          <p className="flex-1 leading-relaxed">
-            <strong className="font-bold text-amber-300">Not saved to this browser. </strong>
-            {storageError}
-          </p>
+          <p className="flex-1 leading-relaxed">{notice}</p>
           <button
-            onClick={() => setStorageError(null)}
+            onClick={() => setNotice(null)}
             className="p-1 rounded-lg text-amber-300/70 hover:text-amber-200 hover:bg-amber-500/10 shrink-0"
             title="Dismiss"
           >
@@ -178,7 +182,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Tab Screen */}
       <main className="flex-1 overflow-y-auto">
         {activeTab === 'upload' && (
           <SheetUploader
@@ -193,6 +196,7 @@ export default function App() {
           currentSheet ? (
             <DetectionEditor
               sheet={currentSheet}
+              settings={settings}
               onPhotosExtracted={handlePhotosExtracted}
               onBackToUpload={() => setActiveTab('upload')}
             />
@@ -214,30 +218,29 @@ export default function App() {
 
         {activeTab === 'gallery' && (
           <GalleryView
-            photos={extractedPhotos}
+            photos={photos}
+            settings={settings}
+            isLoading={isLoadingLibrary}
             onUpdatePhoto={handleUpdatePhoto}
-            onDeletePhoto={handleDeletePhoto}
-            onDeleteBatchPhotos={handleDeleteBatchPhotos}
+            onDeletePhotos={handleDeletePhotos}
             onClearAll={handleClearAll}
             onNavigateToUpload={() => setActiveTab('upload')}
           />
         )}
       </main>
 
-      {/* Bottom Navigation Bar for Mobile / Phone Resolution */}
       <NavbarBottom
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         isAndroidView={isAndroidView}
         setIsAndroidView={setIsAndroidView}
-        extractedCount={extractedPhotos.length}
+        extractedCount={photos.length}
         openSettings={() => setIsSettingsOpen(true)}
         openCamera={() => setIsCameraOpen(true)}
         openOfflineModal={() => setIsOfflineModalOpen(true)}
         openSupportModal={() => setIsSupportModalOpen(true)}
       />
 
-      {/* Modals */}
       {isCameraOpen && (
         <CameraModal
           onCapture={handleSheetSelected}

@@ -23,21 +23,7 @@ export interface FilterSettings {
   preset: 'none' | 'autofix' | 'vintage' | 'bw' | 'sepia' | 'vivid';
 }
 
-export interface ExtractedPhoto {
-  id: string;
-  sheetId: string;
-  title: string;
-  year?: string;
-  tags: string[];
-  quad: PhotoQuad;
-  originalCropUrl: string; // Base cropped & deskewed
-  enhancedUrl: string;    // Final image with filters
-  width: number;
-  height: number;
-  rotation: number;       // 0, 90, 180, 270 degrees
-  filters: FilterSettings;
-  createdAt: number;
-}
+export type OutputFormat = 'png' | 'jpeg' | 'webp';
 
 export interface ScanSheet {
   id: string;
@@ -46,6 +32,8 @@ export interface ScanSheet {
   width: number;
   height: number;
   createdAt: number;
+  /** 'YYYY', 'YYYY-MM' or 'YYYY-MM-DD'. Inherited by every photo cropped from this sheet. */
+  captureDate?: string;
   quads: PhotoQuad[];
   /**
    * Known-correct corners, available only for the generated sample sheets
@@ -60,11 +48,12 @@ export interface ScanSheet {
 }
 
 export interface AppSettings {
+  /** Run detection automatically when a sheet is opened. */
   autoDetectOnUpload: boolean;
-  defaultOutputFormat: 'jpeg' | 'png' | 'webp';
-  jpegQuality: number; // 0.1 to 1.0
-  autoDeskewSensitivity: number; // 1 to 10
-  defaultTrimMargin: number;
-  theme: 'dark' | 'light' | 'system';
-  isProUnlocked: boolean;
+  /** Format used for downloads, ZIP export and folder export. */
+  defaultOutputFormat: OutputFormat;
+  /** Encoder quality for JPEG and WebP, 0.1 to 1.0. Ignored for PNG. */
+  exportQuality: number;
+  /** Starting threshold for the detector, 1 to 10. */
+  autoDeskewSensitivity: number;
 }
