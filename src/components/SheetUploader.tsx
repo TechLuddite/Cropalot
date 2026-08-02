@@ -1,52 +1,111 @@
 import React, { useRef, useState } from 'react';
-import { Upload, Camera, Sparkles, Shield, Lock, Cpu, HardDrive, ArrowRight, Heart, AlertTriangle, X } from 'lucide-react';
+import { Upload, Camera, Sparkles, Shield, Lock, Cpu, HardDrive, ArrowRight, Heart, AlertTriangle, X, FolderOpen } from 'lucide-react';
 import { ScanSheet } from '../types';
 import { generateSampleSheets } from '../utils/sampleSheets';
 
 interface SheetUploaderProps {
-  onSheetSelected: (sheet: ScanSheet) => void;
+  /** One sheet: open it in the editor. Several: queue them as an album. */
+  onSheetsSelected: (sheets: ScanSheet[]) => void;
   openCamera: () => void;
   openOfflineModal?: () => void;
   openSupportModal?: () => void;
 }
 
-export const SheetUploader: React.FC<SheetUploaderProps> = ({ onSheetSelected, openCamera, openOfflineModal, openSupportModal }) => {
+/** Natural sort, so page10 follows page9 rather than page1. */
+function byNaturalName(a: File, b: File): number {
+  return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+export const SheetUploader: React.FC<SheetUploaderProps> = ({ onSheetsSelected, openCamera, openOfflineModal, openSupportModal }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isHovered, setIsHovered] = useState(false);
   const [loadingSample, setLoadingSample] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [isReading, setIsReading] = useState(false);
 
-  // Handle custom file upload
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const canPickFolder = typeof (window as { showDirectoryPicker?: unknown }).showDirectoryPicker === 'function';
 
+  /**
+   * Turns picked files into sheets.
+   *
+   * Files are sorted naturally first, because album pages are almost always
+   * named with numbers and "page10" must not sort between "page1" and "page2".
+   * Anything the browser cannot decode is reported by name rather than dropped,
+   * so a folder of forty scans does not quietly become thirty-eight.
+   */
+  const acceptFiles = async (files: File[]) => {
+    const images = files.filter(f => f.type.startsWith('image/') || /\.(jpe?g|png|webp|avif|gif|bmp)$/i.test(f.name));
+    if (images.length === 0) {
+      setLoadError('No images found in that selection.');
+      return;
+    }
+
+    setIsReading(true);
     setLoadError(null);
 
-    // The File is already a Blob, so it goes straight through - no FileReader,
-    // no base64 copy of the whole scan sitting in memory as a string.
-    try {
-      const bitmap = await createImageBitmap(file);
-      onSheetSelected({
-        id: `sheet_upload_${Date.now()}`,
-        name: file.name.replace(/\.[^/.]+$/, ''),
-        blob: file,
-        width: bitmap.width,
-        height: bitmap.height,
-        createdAt: Date.now(),
-        quads: []
-      });
-      bitmap.close();
-    } catch {
-      // Browsers cannot decode every format a scanner emits - TIFF and HEIC in
-      // particular fail here. Without this the app simply did nothing and left
-      // the user staring at an unchanged screen.
-      const ext = file.name.match(/\.([^.]+)$/)?.[1]?.toUpperCase();
+    const sheets: ScanSheet[] = [];
+    const rejected: string[] = [];
+
+    for (const file of images.sort(byNaturalName)) {
+      try {
+        const bitmap = await createImageBitmap(file);
+        sheets.push({
+          id: `sheet_${Date.now()}_${sheets.length}`,
+          name: file.name.replace(/\.[^/.]+$/, ''),
+          blob: file,
+          width: bitmap.width,
+          height: bitmap.height,
+          createdAt: Date.now(),
+          quads: []
+        });
+        bitmap.close();
+      } catch {
+        rejected.push(file.name);
+      }
+    }
+
+    setIsReading(false);
+
+    if (rejected.length > 0) {
+      const hasLegacy = rejected.some(n => /\.(tiff?|heic|heif)$/i.test(n));
       setLoadError(
-        ext && /^(TIF|TIFF|HEIC|HEIF)$/.test(ext)
-          ? `Your browser cannot open ${ext} files. Convert the scan to JPEG, PNG or WebP and try again.`
-          : `Could not decode "${file.name}". Try a JPEG, PNG or WebP version of this scan.`
+        `${rejected.length} file${rejected.length === 1 ? '' : 's'} could not be opened` +
+        (hasLegacy ? ' — your browser cannot decode TIFF or HEIC. Convert them to JPEG first.' : '.') +
+        ` (${rejected.slice(0, 3).join(', ')}${rejected.length > 3 ? '…' : ''})`
       );
+    }
+
+    if (sheets.length > 0) onSheetsSelected(sheets);
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    void acceptFiles(Array.from(e.target.files ?? []));
+    // Clear so picking the same folder again re-triggers change.
+    e.target.value = '';
+  };
+
+  /** Picks a folder of scans directly, where the browser supports it. */
+  const pickFolder = async () => {
+    const picker = (window as unknown as {
+      showDirectoryPicker?: () => Promise<AsyncIterable<[string, FileSystemHandle]> & {
+        values(): AsyncIterableIterator<FileSystemHandle>;
+      }>;
+    }).showDirectoryPicker;
+    if (!picker) return;
+
+    try {
+      const dir = await picker();
+      const files: File[] = [];
+      for await (const handle of dir.values()) {
+        if (handle.kind === 'file') {
+          files.push(await (handle as FileSystemFileHandle).getFile());
+        }
+      }
+      await acceptFiles(files);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      console.error('Folder pick failed', err);
+      setLoadError('That folder could not be read.');
     }
   };
 
@@ -57,7 +116,7 @@ export const SheetUploader: React.FC<SheetUploaderProps> = ({ onSheetSelected, o
     try {
       const samples = await generateSampleSheets();
       if (samples[index]) {
-        onSheetSelected(samples[index]);
+        onSheetsSelected([samples[index]]);
       }
     } catch (err) {
       console.error('Failed to load sample sheet', err);
@@ -99,16 +158,7 @@ export const SheetUploader: React.FC<SheetUploaderProps> = ({ onSheetSelected, o
         onDrop={(e) => {
           e.preventDefault();
           setIsHovered(false);
-          const file = e.dataTransfer.files?.[0];
-          if (file) {
-            const input = fileInputRef.current;
-            if (input) {
-              const dt = new DataTransfer();
-              dt.items.add(file);
-              input.files = dt.files;
-              handleFileChange({ target: input } as any);
-            }
-          }
+          void acceptFiles(Array.from(e.dataTransfer.files ?? []));
         }}
         onClick={() => fileInputRef.current?.click()}
         className={`relative border-2 border-dashed rounded-3xl p-8 md:p-12 text-center transition-all cursor-pointer overflow-hidden group ${
@@ -121,6 +171,7 @@ export const SheetUploader: React.FC<SheetUploaderProps> = ({ onSheetSelected, o
           ref={fileInputRef}
           type="file"
           accept="image/*"
+          multiple
           onChange={handleFileChange}
           className="hidden"
         />
@@ -132,10 +183,10 @@ export const SheetUploader: React.FC<SheetUploaderProps> = ({ onSheetSelected, o
 
           <div>
             <h3 className="text-lg font-bold text-white">
-              Drop photo sheet scan or click to browse
+              {isReading ? 'Reading pages…' : 'Drop album pages or click to browse'}
             </h3>
             <p className="text-xs text-slate-400 mt-1">
-              Supports JPEG, PNG and WebP scanned pages (any resolution)
+              Drop a whole album at once &mdash; JPEG, PNG or WebP, any resolution
             </p>
           </div>
 
@@ -145,8 +196,18 @@ export const SheetUploader: React.FC<SheetUploaderProps> = ({ onSheetSelected, o
               onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
               className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm transition-all shadow-lg shadow-emerald-500/20"
             >
-              Select Image File
+              Select Pages
             </button>
+            {canPickFolder && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); void pickFolder(); }}
+                className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold text-sm border border-slate-700 flex items-center gap-2 transition-all"
+              >
+                <FolderOpen className="w-4 h-4 text-emerald-400" />
+                <span>Whole Folder</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); openCamera(); }}

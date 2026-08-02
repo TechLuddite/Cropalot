@@ -37,6 +37,8 @@ export interface PhotoRecord {
   original: Blob;
   /** Small preview for the gallery grid, re-rendered when filters change. */
   thumb: Blob;
+  /** Perceptual hash of the crop, used to spot the same photo scanned twice. */
+  hash?: string;
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;

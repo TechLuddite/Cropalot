@@ -14,6 +14,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { OfflinePrivacyModal } from './components/OfflinePrivacyModal';
 import { SupportModal } from './components/SupportModal';
 import { AndroidFrame } from './components/AndroidFrame';
+import { BatchRunner } from './components/BatchRunner';
 import { ScanSheet, AppSettings } from './types';
 import {
   PhotoRecord,
@@ -33,12 +34,31 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoDetectOnUpload: true,
   defaultOutputFormat: 'jpeg',
   exportQuality: 0.92,
-  autoDeskewSensitivity: 5
+  // 7 rather than 5: white-bordered prints on cream album paper are only a
+  // little different from the page, and at 5 the border reads as background,
+  // which splits a light photo into pieces. Measured on the sample sheets,
+  // moving 5 -> 7 costs at most 0.01 IoU while taking a white-border-on-cream
+  // page from 8 spurious detections to a correct 4.
+  autoDeskewSensitivity: 7
 };
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'upload' | 'editor' | 'gallery'>('upload');
-  const [currentSheet, setCurrentSheet] = useState<ScanSheet | null>(null);
+
+  /**
+   * Sheets waiting to be worked through, and where we are in them.
+   *
+   * Digitising an album is inherently a queue - forty pages, not one - and the
+   * app previously modelled a single sheet, so every page meant a return trip
+   * to the upload screen.
+   */
+  const [sheetQueue, setSheetQueue] = useState<ScanSheet[]>([]);
+  const [queueIndex, setQueueIndex] = useState(0);
+  const [isBatchRunning, setIsBatchRunning] = useState(false);
+  /** Date typed on the current page, applied to every page of an unattended run. */
+  const [batchCaptureDate, setBatchCaptureDate] = useState<string | undefined>(undefined);
+
+  const currentSheet = sheetQueue[queueIndex] ?? null;
   const [photos, setPhotos] = useState<PhotoRecord[]>([]);
   const [isLoadingLibrary, setIsLoadingLibrary] = useState<boolean>(true);
   const [isAndroidView, setIsAndroidView] = useState<boolean>(false);
@@ -96,14 +116,16 @@ export default function App() {
     return () => { cancelled = true; };
   }, []);
 
-  const handleSheetSelected = (sheet: ScanSheet) => {
-    setCurrentSheet(sheet);
+  const handleSheetsSelected = (sheets: ScanSheet[]) => {
+    if (sheets.length === 0) return;
+    setSheetQueue(sheets);
+    setQueueIndex(0);
+    setIsBatchRunning(false);
     setActiveTab('editor');
   };
 
-  const handlePhotosExtracted = useCallback(async (newPhotos: PhotoRecord[]) => {
+  const savePhotos = useCallback(async (newPhotos: PhotoRecord[]) => {
     setPhotos(prev => [...newPhotos, ...prev]);
-    setActiveTab('gallery');
     try {
       await putPhotos(newPhotos);
     } catch (err) {
@@ -111,6 +133,27 @@ export default function App() {
       setNotice('These photos could not be written to local storage. Export them before closing this tab.');
     }
   }, []);
+
+  /**
+   * After extracting a page, move to the next one rather than bouncing to the
+   * gallery. Only the last page ends the run.
+   */
+  const handlePhotosExtracted = useCallback(async (newPhotos: PhotoRecord[]) => {
+    await savePhotos(newPhotos);
+    setQueueIndex(prev => {
+      if (prev + 1 < sheetQueue.length) return prev + 1;
+      setActiveTab('gallery');
+      return prev;
+    });
+  }, [savePhotos, sheetQueue.length]);
+
+  const handleBatchComplete = useCallback(async (batchPhotos: PhotoRecord[]) => {
+    if (batchPhotos.length > 0) await savePhotos(batchPhotos);
+    setIsBatchRunning(false);
+    setSheetQueue([]);
+    setQueueIndex(0);
+    setActiveTab('gallery');
+  }, [savePhotos]);
 
   const handleUpdatePhoto = useCallback(async (updated: PhotoRecord) => {
     setPhotos(prev => prev.map(p => (p.id === updated.id ? updated : p)));
@@ -185,7 +228,7 @@ export default function App() {
       <main className="flex-1 overflow-y-auto">
         {activeTab === 'upload' && (
           <SheetUploader
-            onSheetSelected={handleSheetSelected}
+            onSheetsSelected={handleSheetsSelected}
             openCamera={() => setIsCameraOpen(true)}
             openOfflineModal={() => setIsOfflineModalOpen(true)}
             openSupportModal={() => setIsSupportModalOpen(true)}
@@ -193,12 +236,26 @@ export default function App() {
         )}
 
         {activeTab === 'editor' && (
-          currentSheet ? (
+          isBatchRunning && sheetQueue.length > 0 ? (
+            <BatchRunner
+              sheets={sheetQueue}
+              sensitivity={settings.autoDeskewSensitivity}
+              captureDate={batchCaptureDate}
+              onComplete={handleBatchComplete}
+              onCancel={() => { setIsBatchRunning(false); }}
+            />
+          ) : currentSheet ? (
             <DetectionEditor
+              key={currentSheet.id}
               sheet={currentSheet}
               settings={settings}
+              pageNumber={queueIndex + 1}
+              totalPages={sheetQueue.length}
               onPhotosExtracted={handlePhotosExtracted}
-              onBackToUpload={() => setActiveTab('upload')}
+              onSkipPage={() => setQueueIndex(i => (i + 1 < sheetQueue.length ? i + 1 : i))}
+              onPreviousPage={() => setQueueIndex(i => Math.max(0, i - 1))}
+              onRunBatch={(date) => { setBatchCaptureDate(date); setIsBatchRunning(true); }}
+              onBackToUpload={() => { setSheetQueue([]); setQueueIndex(0); setActiveTab('upload'); }}
             />
           ) : (
             <div className="text-center py-20 max-w-md mx-auto space-y-4 px-4">
@@ -243,7 +300,7 @@ export default function App() {
 
       {isCameraOpen && (
         <CameraModal
-          onCapture={handleSheetSelected}
+          onCapture={(sheet) => handleSheetsSelected([sheet])}
           onClose={() => setIsCameraOpen(false)}
         />
       )}
