@@ -1,7 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { PhotoQuad, ScanSheet, Point, ExtractedPhoto } from '../types';
-import { detectPhotoQuads, extractAndDeskewPhoto } from '../utils/cvEngine';
-import { Plus, Trash2, RotateCw, Check, RefreshCw, ArrowRight, AlertTriangle, X } from 'lucide-react';
+import { detectPhotoQuads, extractAndDeskewPhoto, prepareSheet, quadIoU } from '../utils/cvEngine';
+import { orderQuadPoints } from '../utils/geometry';
+import { Plus, Trash2, RotateCw, Check, RefreshCw, ArrowRight, AlertTriangle, X, Target, Sliders } from 'lucide-react';
+
+/** Loads a data URL into an <img>, rejecting rather than hanging on failure. */
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('decode failed'));
+    img.src = src;
+  });
+}
 
 /** Reads back the true pixel dimensions of a rendered crop. */
 function measureImage(src: string): Promise<{ width: number; height: number }> {
@@ -33,47 +45,71 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
   const [draggingPoint, setDraggingPoint] = useState<{ quadId: string; pointIdx: number } | null>(null);
   const [loupePos, setLoupePos] = useState<{ x: number; y: number; normX: number; normY: number } | null>(null);
 
-  const [sensitivity] = useState<number>(5);
+  const [sensitivity, setSensitivity] = useState<number>(5);
   const [isDetecting, setIsDetecting] = useState<boolean>(false);
   const [isExtracting, setIsExtracting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [accuracy, setAccuracy] = useState<{ meanIoU: number; matched: number; expected: number } | null>(null);
 
   // Auto-detect on mount if no quads exist
   useEffect(() => {
     if ((!sheet.quads || sheet.quads.length === 0) && sheet.dataUrl) {
-      runAutoDetection();
+      runAutoDetection(sensitivity);
     } else if (sheet.quads && sheet.quads.length > 0) {
       setQuads(sheet.quads);
       setSelectedQuadId(sheet.quads[0].id);
     }
+    // Detection is re-run explicitly by the sensitivity control, not on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheet]);
 
-  const runAutoDetection = async () => {
+  /**
+   * Scores detection against the sample sheet's known-correct corners.
+   *
+   * Each expected photo is matched to its best-overlapping detection, so a
+   * missed photo drags the mean toward zero rather than being quietly ignored.
+   */
+  const scoreAgainstGroundTruth = (detected: PhotoQuad[]) => {
+    const truth = sheet.groundTruthQuads;
+    if (!truth || truth.length === 0) {
+      setAccuracy(null);
+      return;
+    }
+
+    let total = 0;
+    let matched = 0;
+    for (const expected of truth) {
+      let bestIoU = 0;
+      for (const found of detected) {
+        const iou = quadIoU(expected.points, found.points);
+        if (iou > bestIoU) bestIoU = iou;
+      }
+      total += bestIoU;
+      if (bestIoU > 0.5) matched++;
+    }
+
+    setAccuracy({ meanIoU: total / truth.length, matched, expected: truth.length });
+  };
+
+  const runAutoDetection = async (withSensitivity: number) => {
     if (!sheet.dataUrl) return;
     setIsDetecting(true);
     setError(null);
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = async () => {
-      try {
-        const detected = await detectPhotoQuads(img, sensitivity, sheet.quads);
-        setQuads(detected);
-        if (detected.length > 0) {
-          setSelectedQuadId(detected[0].id);
-        }
-      } catch (err) {
-        console.error('Detection failed', err);
-        setError('Automatic detection failed on this sheet. Use "Add Box" to place crops by hand.');
-      } finally {
-        setIsDetecting(false);
+    try {
+      const img = await loadImage(sheet.dataUrl);
+      const detected = await detectPhotoQuads(img, withSensitivity);
+      setQuads(detected);
+      setSelectedQuadId(detected.length > 0 ? detected[0].id : null);
+      scoreAgainstGroundTruth(detected);
+      if (detected.length === 0) {
+        setError('No photos found on this sheet. Raise the sensitivity, or use "Add Box" to place crops by hand.');
       }
-    };
-    // Without this the spinner span forever on any image the browser cannot decode.
-    img.onerror = () => {
-      setIsDetecting(false);
+    } catch (err) {
+      console.error('Detection failed', err);
       setError('This scan could not be opened. Go back and try a JPEG, PNG or WebP version.');
-    };
-    img.src = sheet.dataUrl;
+    } finally {
+      setIsDetecting(false);
+    }
   };
 
   // Corner point dragging logic
@@ -121,7 +157,23 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
     renderLoupe(normX, normY);
   };
 
+  /**
+   * Re-sorts a quad's corners into TL/TR/BR/BL order.
+   *
+   * Dragging one corner past another produces a self-intersecting "bowtie",
+   * which the warp renders as garbage. orderQuadPoints existed for exactly this
+   * and was imported but never called, so the failure was silent.
+   */
+  const normaliseQuad = (quadId: string) => {
+    setQuads(prev =>
+      prev.map(q =>
+        q.id === quadId ? { ...q, points: orderQuadPoints(q.points) } : q
+      )
+    );
+  };
+
   const handleMouseUp = () => {
+    if (draggingPoint) normaliseQuad(draggingPoint.quadId);
     setDraggingPoint(null);
     setLoupePos(null);
   };
@@ -222,6 +274,7 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
   };
 
   const handleTouchEnd = () => {
+    if (draggingPoint) normaliseQuad(draggingPoint.quadId);
     setDraggingPoint(null);
     setLoupePos(null);
   };
@@ -236,7 +289,8 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
         { x: 0.6, y: 0.6 },
         { x: 0.2, y: 0.6 }
       ],
-      confidence: 1.0,
+      confidence: 1,
+      angleDeg: 0,
       label: `Photo ${quads.length + 1}`
     };
     setQuads([...quads, newQuad]);
@@ -270,62 +324,67 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
     setIsExtracting(true);
     setError(null);
 
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = async () => {
-      try {
-        const extractedList: ExtractedPhoto[] = [];
+    try {
+      const img = await loadImage(sheet.dataUrl);
 
-        for (let i = 0; i < quads.length; i++) {
-          const q = quads[i];
-          const croppedUrl = extractAndDeskewPhoto(img, q);
+      // Decode the sheet once and reuse the buffer for every crop.
+      const pixels = prepareSheet(img);
+      if (!pixels) throw new Error('could not read sheet pixels');
 
-          // These crops are family archives. Ship the pixels as cropped and let
-          // the user opt into corrections in the enhancer, rather than baking an
-          // auto-contrast stretch and a sharpen pass into the only copy they
-          // ever get to export.
-          const defaultFilters = {
-            brightness: 0,
-            contrast: 0,
-            saturation: 0,
-            warmth: 0,
-            sharpen: 0,
-            trimMargin: 0,
-            preset: 'none' as const
-          };
+      const extractedList: ExtractedPhoto[] = [];
 
-          // Measure what was actually produced instead of asserting 800x600.
-          const dims = await measureImage(croppedUrl);
+      for (let i = 0; i < quads.length; i++) {
+        const q = quads[i];
+        const croppedUrl = extractAndDeskewPhoto(pixels, q);
+        if (!croppedUrl) continue;
 
-          extractedList.push({
-            id: `photo_${Date.now()}_${i}`,
-            sheetId: sheet.id,
-            title: q.label || `${sheet.name}_Photo_${i + 1}`,
-            tags: ['Family', 'Scan'],
-            quad: q,
-            originalCropUrl: croppedUrl,
-            enhancedUrl: croppedUrl,
-            width: dims.width,
-            height: dims.height,
-            rotation: 0,
-            filters: defaultFilters,
-            createdAt: Date.now()
-          });
-        }
+        // These crops are family archives. Ship the pixels as cropped and let
+        // the user opt into corrections in the enhancer, rather than baking an
+        // auto-contrast stretch and a sharpen pass into the only copy they
+        // ever get to export.
+        const defaultFilters = {
+          brightness: 0,
+          contrast: 0,
+          saturation: 0,
+          warmth: 0,
+          sharpen: 0,
+          trimMargin: 0,
+          preset: 'none' as const
+        };
 
-        onPhotosExtracted(extractedList);
-      } catch (err) {
-        console.error('Extraction failed', err);
-        setError('Extraction failed. The sheet may be too large for this device to process at once.');
-      } finally {
-        setIsExtracting(false);
+        // Measure what was actually produced instead of asserting 800x600.
+        const dims = await measureImage(croppedUrl);
+
+        extractedList.push({
+          id: `photo_${Date.now()}_${i}`,
+          sheetId: sheet.id,
+          title: q.label || `${sheet.name}_Photo_${i + 1}`,
+          tags: ['Family', 'Scan'],
+          quad: q,
+          originalCropUrl: croppedUrl,
+          enhancedUrl: croppedUrl,
+          width: dims.width,
+          height: dims.height,
+          rotation: 0,
+          filters: defaultFilters,
+          createdAt: Date.now()
+        });
+
+        // Yield between photos so the progress label can repaint.
+        await new Promise(r => setTimeout(r, 0));
       }
-    };
-    img.onerror = () => {
+
+      if (extractedList.length === 0) {
+        setError('Nothing could be extracted from these regions.');
+        return;
+      }
+      onPhotosExtracted(extractedList);
+    } catch (err) {
+      console.error('Extraction failed', err);
+      setError('Extraction failed. The sheet may be too large for this device to process at once.');
+    } finally {
       setIsExtracting(false);
-      setError('This scan could not be opened for extraction.');
-    };
-    img.src = sheet.dataUrl;
+    }
   };
 
   return (
@@ -333,11 +392,29 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
       {/* Top Controls Bar */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-slate-900 border border-slate-800 p-4 rounded-2xl shadow-xl">
         <div>
-          <h2 className="font-bold text-lg text-white flex items-center gap-2">
+          <h2 className="font-bold text-lg text-white flex items-center gap-2 flex-wrap">
             <span>Deskew & Crop Editor</span>
             <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
               {quads.length} {quads.length === 1 ? 'Photo' : 'Photos'} Detected
             </span>
+            {/* Only the generated samples have known-correct corners to score against. */}
+            {accuracy && (
+              <span
+                title="Mean intersection-over-union of automatic detection against this sample sheet's known photo corners. 1.00 is a perfect match."
+                className={`px-2 py-0.5 rounded-full text-xs font-semibold border flex items-center gap-1 ${
+                  accuracy.meanIoU >= 0.9
+                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                    : accuracy.meanIoU >= 0.7
+                    ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                    : 'bg-rose-500/10 text-rose-300 border-rose-500/30'
+                }`}
+              >
+                <Target className="w-3 h-3" />
+                <span>
+                  IoU {accuracy.meanIoU.toFixed(2)} &middot; {accuracy.matched}/{accuracy.expected} found
+                </span>
+              </span>
+            )}
           </h2>
           <p className="text-xs text-slate-400">
             Drag corners to fine-tune cropping & perspective alignment. Use magnifier lens for pixel accuracy.
@@ -354,7 +431,7 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
           </button>
 
           <button
-            onClick={runAutoDetection}
+            onClick={() => runAutoDetection(sensitivity)}
             disabled={isDetecting}
             className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition-colors"
           >
@@ -381,6 +458,36 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
             )}
           </button>
         </div>
+      </div>
+
+      {/* Detection sensitivity - the state existed but had no control bound to it,
+          so the threshold was permanently pinned at its default. */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5">
+        <div className="flex items-center gap-2 shrink-0">
+          <Sliders className="w-4 h-4 text-emerald-400" />
+          <span className="text-xs font-bold text-slate-200">Detection sensitivity</span>
+        </div>
+        <div className="flex-1 flex items-center gap-3">
+          <span className="text-[10px] text-slate-500 shrink-0">Fewer</span>
+          <input
+            type="range"
+            min="1"
+            max="10"
+            step="1"
+            value={sensitivity}
+            aria-label="Detection sensitivity"
+            onChange={(e) => setSensitivity(parseInt(e.target.value, 10))}
+            onMouseUp={(e) => runAutoDetection(parseInt((e.target as HTMLInputElement).value, 10))}
+            onTouchEnd={(e) => runAutoDetection(parseInt((e.target as HTMLInputElement).value, 10))}
+            onKeyUp={(e) => runAutoDetection(parseInt((e.target as HTMLInputElement).value, 10))}
+            className="flex-1 accent-emerald-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+          />
+          <span className="text-[10px] text-slate-500 shrink-0">More</span>
+          <span className="text-xs font-bold text-emerald-400 w-5 text-right tabular-nums">{sensitivity}</span>
+        </div>
+        <p className="text-[10px] text-slate-500 sm:max-w-[16rem] leading-relaxed">
+          Raise this if photos are missed on a low-contrast page; lower it if the page texture is being picked up as photos.
+        </p>
       </div>
 
       {/* Detection / extraction failure notice */}
@@ -537,11 +644,16 @@ export const DetectionEditor: React.FC<DetectionEditorProps> = ({
                     : 'bg-slate-950/60 border-slate-800/80 text-slate-300 hover:border-slate-700'
                 }`}
               >
-                <div className="space-y-0.5">
+                <div className="space-y-0.5 min-w-0">
                   <span className="font-bold text-xs text-emerald-400">
                     {quad.label || `Photo ${idx + 1}`}
                   </span>
-                  <p className="text-[10px] text-slate-400">4-Corner Alignment Ready</p>
+                  <p className="text-[10px] text-slate-400">
+                    {quad.angleDeg !== undefined && Math.abs(quad.angleDeg) >= 0.5
+                      ? `${quad.angleDeg > 0 ? '+' : ''}${quad.angleDeg.toFixed(1)}° tilt`
+                      : 'Square to page'}
+                    {quad.confidence > 0 && ` · ${Math.round(quad.confidence * 100)}% fill`}
+                  </p>
                 </div>
 
                 <div className="flex items-center gap-1">

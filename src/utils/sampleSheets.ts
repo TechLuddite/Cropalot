@@ -1,7 +1,12 @@
 import { ScanSheet, PhotoQuad } from '../types';
 
 /**
- * Generates 3 realistic high-res sample photo album sheets with auto-detectable photos
+ * Generates three sample album pages, each returned with the exact corner
+ * coordinates of the photos drawn onto it.
+ *
+ * Those coordinates are ground truth for scoring detection accuracy - see the
+ * IoU readout in the editor - and are deliberately NOT used as the starting
+ * crops. The samples run through the same detector as a real upload.
  */
 export async function generateSampleSheets(): Promise<ScanSheet[]> {
   const sheet1 = await createVintageAlbumSheet();
@@ -187,7 +192,8 @@ async function createVintageAlbumSheet(): Promise<ScanSheet> {
     width: w,
     height: h,
     createdAt: Date.now() - 86400000 * 5,
-    quads: [quad1, quad2, quad3, quad4]
+    quads: [],
+    groundTruthQuads: [quad1, quad2, quad3, quad4]
   };
 }
 
@@ -254,7 +260,8 @@ async function createPolaroidScrapbookSheet(): Promise<ScanSheet> {
     width: w,
     height: h,
     createdAt: Date.now() - 86400000 * 2,
-    quads: [quad1, quad2]
+    quads: [],
+    groundTruthQuads: [quad1, quad2]
   };
 }
 
@@ -317,7 +324,8 @@ async function createColorGridScanSheet(): Promise<ScanSheet> {
     width: w,
     height: h,
     createdAt: Date.now() - 86400000,
-    quads: [quad1, quad2]
+    quads: [],
+    groundTruthQuads: [quad1, quad2]
   };
 }
 
@@ -404,7 +412,8 @@ function drawSamplePhoto(
   return {
     id: `quad_sample_${Math.random().toString(36).substring(2, 7)}`,
     points: sheetPoints,
-    confidence: 0.95,
+    confidence: 1,
+    angleDeg: rotationDeg,
     label: title
   };
 }
